@@ -75,6 +75,10 @@ const ALL_FOODS = [...TRIGGERS, ...POSITIVES];
 const EXERCISE_OPTS = ["None","Walking","Yoga / Stretching","Swimming","Cycling","Strength Training","Running","Other"];
 const WEATHER_OPTS  = ["☀️ Sunny","⛅ Cloudy","🌧️ Rainy","🌬️ Windy","❄️ Cold","💧 Humid","🌡️ Hot"];
 
+const MORNING_LBLS = ["–","Fine","Stiff","Very Sore"];
+const MORNING_BG   = ["#F0E8E0","#E8F5E9","#FFE0B2","#FFCDD2"];
+const MORNING_FG   = ["#9a9189","#388E3C","#EF6C00","#B71C1C"];
+
 const PAIN_BG   = ["#E8F5E9","#C8E6C9","#FFF9C4","#FFE0B2","#FFCCBC","#FFCDD2"];
 const PAIN_FG   = ["#388E3C","#2E7D32","#F9A825","#EF6C00","#BF360C","#B71C1C"];
 const PAIN_LBLS = ["None","Very Mild","Mild","Moderate","Severe","Very Severe"];
@@ -88,6 +92,9 @@ const emptyLog = () => ({
   date:todayStr(), overallPain:0, joints:{}, swelling:{},
   foods:[], exercise:"None", exerciseMins:0,
   alcohol:0, stress:0, sleep:7, weather:[], notes:"",
+  skinFlare:0,
+  fatigue:0,
+  morning:0,
 });
 
 // ─── Storage: localStorage with in-memory fallback ────────────────────────────
@@ -227,6 +234,48 @@ function LogTab({ log, setLog, onSave, saveMsg }) {
             style={{ flex:1, accentColor:"#2C5F4A" }} />
           <span style={{ fontSize:11, color:"#9a9189" }}>Severe</span>
         </div>
+      </Card>
+
+      <Card title="How sore did you feel this morning?" emoji="🌅">
+        <p style={{ fontSize:13, color:"#9a9189", margin:"0 0 12px" }}>
+          Morning stiffness duration & severity is a key PsA indicator your rheumatologist will ask about.
+        </p>
+        <div style={{ display:"flex", gap:8 }}>
+          {[1,2,3].map(v => (
+            <button key={v}
+              onClick={() => setLog(p=>({...p, morning:v}))}
+              style={{
+                flex:1, padding:"14px 0", borderRadius:12,
+                border:`2px solid ${log.morning===v ? MORNING_FG[v] : "#E2D9CE"}`,
+                background: log.morning===v ? MORNING_BG[v] : "#fff",
+                color: log.morning===v ? MORNING_FG[v] : "#9a9189",
+                cursor:"pointer", fontWeight:700,
+              }}>
+              <div style={{ fontSize:24, fontFamily:"'Lora',serif", lineHeight:1 }}>{v}</div>
+              <div style={{ fontSize:11, marginTop:6, fontWeight:500 }}>{MORNING_LBLS[v]}</div>
+            </button>
+          ))}
+        </div>
+      </Card>
+
+      <Card title="Fatigue" emoji="🪫">
+        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:10 }}>
+          <span style={{ fontSize:13, color:"#7a7069" }}>How tired do you feel today?</span>
+          <span style={{ fontSize:13, fontWeight:600, color:pf(log.fatigue) }}>
+            {["–","Very Little","Mild","Moderate","Heavy","Exhausted"][log.fatigue] ?? "–"}
+          </span>
+        </div>
+        <ScaleDots value={log.fatigue} onChange={v=>setLog(p=>({...p, fatigue:v}))}/>
+      </Card>
+
+      <Card title="Skin / Psoriasis" emoji="✨">
+        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:10 }}>
+          <span style={{ fontSize:13, color:"#7a7069" }}>How severe is the psoriasis today?</span>
+          <span style={{ fontSize:13, fontWeight:600, color:pf(log.skinFlare) }}>
+            {["None","Very Mild","Mild","Moderate","Severe","Very Severe"][log.skinFlare]}
+          </span>
+        </div>
+        <ScaleDots value={log.skinFlare} onChange={v=>setLog(p=>({...p, skinFlare:v}))}/>
       </Card>
 
       <Card title="Joint Symptoms" emoji="🦴">
@@ -407,6 +456,9 @@ function HistoryTab({ logs, onExport, onImport }) {
               </div>
             </div>
             <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+              {entry.morning>0 && <span style={{ fontSize:11, background:MORNING_BG[entry.morning], color:MORNING_FG[entry.morning], borderRadius:20, padding:"2px 9px" }}>🌅 {MORNING_LBLS[entry.morning]} morning</span>}
+              {entry.fatigue>0 && <span style={{ fontSize:11, background:pb(entry.fatigue), color:pf(entry.fatigue), borderRadius:20, padding:"2px 9px" }}>🪫 Fatigue {entry.fatigue}/5</span>}
+              {entry.skinFlare>0 && <span style={{ fontSize:11, background:pb(entry.skinFlare), color:pf(entry.skinFlare), borderRadius:20, padding:"2px 9px" }}>✨ Skin {entry.skinFlare}/5</span>}
               {affected.slice(0,5).map(([jid,pain])=>{
                 const j=JOINTS.find(x=>x.id===jid);
                 return <span key={jid} style={{ fontSize:11, background:pb(pain), color:pf(pain),
@@ -454,6 +506,21 @@ function InsightsTab({ logs }) {
   const fmt  = v => v===null ? "–" : v.toFixed(1);
 
   const trend = logs.slice(-21).map(l=>({ date:l.date.slice(5), pain:l.overallPain }));
+
+  // Multi-metric trend (pain, fatigue, skin) over last 21 days
+  const fatigueAvg = avge(logs.map(l=>l.fatigue||0));
+  const skinAvg    = avge(logs.map(l=>l.skinFlare||0));
+
+  // Morning soreness breakdown
+  const morningCounts = [0,0,0,0];
+  logs.forEach(l => { if (l.morning>=0 && l.morning<=3) morningCounts[l.morning]++; });
+  const morningLogged = morningCounts[1] + morningCounts[2] + morningCounts[3];
+
+  // Skin <-> joint correlation: does pain rise on skin flare days?
+  const skinFlareDays   = logs.filter(l=>(l.skinFlare||0)>=2);
+  const noSkinFlareDays = logs.filter(l=>(l.skinFlare||0)<2);
+  const painOnSkin      = avge(skinFlareDays.map(l=>l.overallPain));
+  const painOffSkin     = avge(noSkinFlareDays.map(l=>l.overallPain));
 
   const foodInsights = ALL_FOODS.map(food=>{
     const w  = logs.filter(l=>(l.foods||[]).includes(food.id)).map(l=>l.overallPain);
@@ -503,6 +570,45 @@ function InsightsTab({ logs }) {
         <div style={{ fontSize:12, color:"#9a9189", marginBottom:10 }}>Last {trend.length} days logged</div>
         <SimpleLineChart data={trend}/>
       </Card>
+
+      <Card title="Daily Averages" emoji="🌡️">
+        <div style={{ display:"flex", gap:10 }}>
+          <SB label="Pain"    value={fmt(avge(logs.map(l=>l.overallPain)))} sub="overall" color={pf(3)} bg={pb(3)}/>
+          <SB label="Fatigue" value={fmt(fatigueAvg)} sub="0–5" color="#6A4C93" bg="#EFE6F5"/>
+          <SB label="Skin"    value={fmt(skinAvg)}    sub="flare" color="#B85C38" bg="#FFF0E8"/>
+        </div>
+      </Card>
+
+      {morningLogged >= 3 && (
+        <Card title="Morning Soreness" emoji="🌅">
+          <div style={{ display:"flex", gap:10, marginBottom:12 }}>
+            {[1,2,3].map(v => (
+              <SB key={v}
+                label={MORNING_LBLS[v]}
+                value={morningCounts[v]}
+                sub={`${Math.round(morningCounts[v]/morningLogged*100)}% of days`}
+                color={MORNING_FG[v]} bg={MORNING_BG[v]}/>
+            ))}
+          </div>
+          <div style={{ fontSize:12, color:"#9a9189", fontStyle:"italic" }}>
+            Rheumatologists ask about morning stiffness at every appointment — these numbers are useful to share.
+          </div>
+        </Card>
+      )}
+
+      {painOnSkin!==null && painOffSkin!==null && skinFlareDays.length>=2 && (
+        <Card title="Skin & Joint Connection" emoji="✨">
+          <div style={{ display:"flex", gap:10, marginBottom:12 }}>
+            <SB label="On skin flare days"  value={fmt(painOnSkin)}  sub={`${skinFlareDays.length} days`} color="#B85C38" bg="#FFF0E8"/>
+            <SB label="On clear-skin days"  value={fmt(painOffSkin)} sub={`${noSkinFlareDays.length} days`} color="#2C5F4A" bg="#E8F5E9"/>
+          </div>
+          {painOnSkin > painOffSkin + 0.3 && (
+            <div style={{ padding:12, background:"#FFF0E8", borderRadius:9, fontSize:13, color:"#1e3d2f", lineHeight:1.6 }}>
+              💡 Joint pain runs {(painOnSkin-painOffSkin).toFixed(1)} points higher when skin is flaring — they appear linked.
+            </div>
+          )}
+        </Card>
+      )}
 
       {topJoints.length>0 && (
         <Card title="Most Affected Joints" emoji="🦴">
