@@ -205,6 +205,147 @@ function SimpleLineChart({ data }) {
   );
 }
 
+// ─── Calendar Heatmap ─────────────────────────────────────────────────────────
+
+function CalendarHeatmap({ logs, onEditEntry, onAddMissedDay }) {
+  const today = new Date(todayStr()+"T12:00:00");
+  const [viewDate, setViewDate] = useState(new Date(today.getFullYear(), today.getMonth(), 1));
+  const [metric, setMetric] = useState("overallPain");
+
+  const METRICS = [
+    { key:"overallPain", label:"Pain",    accent:"#C62828" },
+    { key:"fatigue",     label:"Fatigue", accent:"#6A4C93" },
+    { key:"skinFlare",   label:"Skin",    accent:"#B85C38" },
+  ];
+
+  // Build a date->log map for fast lookup
+  const byDate = {};
+  logs.forEach(l => { byDate[l.date] = l; });
+
+  const year  = viewDate.getFullYear();
+  const month = viewDate.getMonth();
+  const monthLabel = viewDate.toLocaleDateString("en-GB", { month:"long", year:"numeric" });
+  const firstDay   = new Date(year, month, 1);
+  const lastDay    = new Date(year, month+1, 0);
+  const daysInMonth = lastDay.getDate();
+
+  // Mon-first column: getDay() returns 0=Sun..6=Sat. Convert: Mon=0, Sun=6
+  const firstCol = (firstDay.getDay() + 6) % 7;
+
+  const fmtDate = (d) => d.toISOString().split("T")[0];
+  const todayKey = fmtDate(today);
+
+  const goPrev = () => setViewDate(new Date(year, month-1, 1));
+  const goNext = () => setViewDate(new Date(year, month+1, 1));
+  const isCurrentMonth = year === today.getFullYear() && month === today.getMonth();
+
+  // Build the grid: array of cells (null for empty padding cells)
+  const cells = [];
+  for (let i=0; i<firstCol; i++) cells.push(null);
+  for (let d=1; d<=daysInMonth; d++) {
+    const date = new Date(year, month, d);
+    const key  = fmtDate(date);
+    const entry = byDate[key];
+    const isFuture = date > today;
+    const isToday  = key === todayKey;
+    const value = entry ? (entry[metric]||0) : null;
+    cells.push({ d, key, entry, isFuture, isToday, value });
+  }
+
+  const handleTap = (cell) => {
+    if (cell.isFuture) return;
+    if (cell.entry) onEditEntry(cell.key);
+    else onAddMissedDay(cell.key);
+  };
+
+  const cellBg = (cell) => {
+    if (cell.isFuture) return "#FAF7F2";
+    if (cell.value === null) return "#F5F0EB";  // not logged
+    return PAIN_BG[cell.value];
+  };
+  const cellFg = (cell) => {
+    if (cell.isFuture) return "#D6CFC5";
+    if (cell.value === null) return "#C9BBAB";
+    return PAIN_FG[cell.value];
+  };
+
+  const DAY_HEADERS = ["M","T","W","T","F","S","S"];
+
+  return (
+    <div>
+      {/* Metric switcher */}
+      <div style={{ display:"flex", gap:6, marginBottom:14 }}>
+        {METRICS.map(m => (
+          <button key={m.key} onClick={() => setMetric(m.key)} style={{
+            flex:1, padding:"8px 0", borderRadius:8,
+            border:`1.5px solid ${metric===m.key ? m.accent : "#E2D9CE"}`,
+            background: metric===m.key ? m.accent : "#fff",
+            color: metric===m.key ? "#fff" : "#7a7069",
+            cursor:"pointer", fontSize:12, fontWeight:600,
+          }}>{m.label}</button>
+        ))}
+      </div>
+
+      {/* Month nav */}
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+        <button onClick={goPrev} style={{
+          padding:"6px 12px", borderRadius:8, border:"1px solid #E2D9CE",
+          background:"#fff", cursor:"pointer", fontSize:14, color:"#2C5F4A", fontWeight:600,
+        }}>‹</button>
+        <div style={{ fontFamily:"'Lora',serif", fontWeight:700, fontSize:15, color:"#1e3d2f" }}>{monthLabel}</div>
+        <button onClick={goNext} disabled={isCurrentMonth} style={{
+          padding:"6px 12px", borderRadius:8,
+          border:`1px solid ${isCurrentMonth ? "#F0E8E0" : "#E2D9CE"}`,
+          background:"#fff", cursor: isCurrentMonth ? "not-allowed" : "pointer",
+          fontSize:14, color: isCurrentMonth ? "#D6CFC5" : "#2C5F4A", fontWeight:600,
+        }}>›</button>
+      </div>
+
+      {/* Day headers */}
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(7, 1fr)", gap:4, marginBottom:4 }}>
+        {DAY_HEADERS.map((h,i) => (
+          <div key={i} style={{ textAlign:"center", fontSize:10, color:"#9a9189", fontWeight:600 }}>{h}</div>
+        ))}
+      </div>
+
+      {/* Day cells */}
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(7, 1fr)", gap:4 }}>
+        {cells.map((c,i) => c ? (
+          <button key={i} onClick={() => handleTap(c)} disabled={c.isFuture}
+            style={{
+              aspectRatio:"1/1", border:c.isToday ? "2px solid #2C5F4A" : "1px solid transparent",
+              borderRadius:7, background:cellBg(c), color:cellFg(c),
+              cursor: c.isFuture ? "not-allowed" : "pointer",
+              fontSize:13, fontWeight: c.entry ? 700 : 500,
+              fontFamily:"'DM Sans',sans-serif",
+              display:"flex", alignItems:"center", justifyContent:"center",
+              padding:0, transition:"transform .1s",
+            }}>
+            {c.d}
+          </button>
+        ) : <div key={i}/>)}
+      </div>
+
+      {/* Legend */}
+      <div style={{ marginTop:14, display:"flex", alignItems:"center", gap:8, justifyContent:"center" }}>
+        <span style={{ fontSize:10, color:"#9a9189" }}>None</span>
+        {[0,1,2,3,4,5].map(v => (
+          <div key={v} style={{ width:18, height:14, background:PAIN_BG[v],
+            borderRadius:3, border:`1px solid ${PAIN_FG[v]}30` }}/>
+        ))}
+        <span style={{ fontSize:10, color:"#9a9189" }}>Severe</span>
+        <div style={{ width:18, height:14, background:"#F5F0EB",
+          borderRadius:3, border:"1px solid #C9BBAB", marginLeft:8 }}/>
+        <span style={{ fontSize:10, color:"#9a9189" }}>Not logged</span>
+      </div>
+
+      <div style={{ fontSize:11, color:"#9a9189", textAlign:"center", marginTop:10, fontStyle:"italic" }}>
+        Tap a day to view or edit · Today is outlined
+      </div>
+    </div>
+  );
+}
+
 // ─── Log Tab ─────────────────────────────────────────────────────────────────
 
 function LogTab({ log, setLog, onSave, saveMsg, onResetToToday, logs }) {
@@ -556,7 +697,7 @@ function HistoryTab({ logs, onExport, onImport, onEditEntry, onDeleteEntry, onAd
 
 // ─── Insights Tab ─────────────────────────────────────────────────────────────
 
-function InsightsTab({ logs }) {
+function InsightsTab({ logs, onEditEntry, onAddMissedDay }) {
   const n = logs.length;
   if (n < 5) return (
     <div style={{ padding:"40px 0" }}>
@@ -713,6 +854,10 @@ function InsightsTab({ logs }) {
       <Card title="Pain Trend" emoji="📈">
         <div style={{ fontSize:12, color:"#9a9189", marginBottom:10 }}>Last {trend.length} days logged</div>
         <SimpleLineChart data={trend}/>
+      </Card>
+
+      <Card title="Calendar View" emoji="🗓️">
+        <CalendarHeatmap logs={logs} onEditEntry={onEditEntry} onAddMissedDay={onAddMissedDay}/>
       </Card>
 
       {/* Trend Direction — three states */}
@@ -1031,7 +1176,7 @@ function PsATracker() {
       <main style={{ padding:"16px 16px 0" }}>
         {tab==="log"      && <LogTab      log={log} setLog={setLog} onSave={onSave} saveMsg={saveMsg} onResetToToday={onResetToToday} logs={logs}/>}
         {tab==="history"  && <HistoryTab  logs={logs} onExport={onExport} onImport={onImport} onEditEntry={onEditEntry} onDeleteEntry={onDeleteEntry} onAddMissedDay={onAddMissedDay}/>}
-        {tab==="insights" && <InsightsTab logs={logs}/>}
+        {tab==="insights" && <InsightsTab logs={logs} onEditEntry={onEditEntry} onAddMissedDay={onAddMissedDay}/>}
       </main>
     </div>
   );
