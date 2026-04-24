@@ -631,6 +631,42 @@ function InsightsTab({ logs }) {
   const painOnSkin      = avge(skinFlareDays.map(l=>l.overallPain));
   const painOffSkin     = avge(noSkinFlareDays.map(l=>l.overallPain));
 
+  // ─── Trend direction: rolling 28-day windows ──────────────────────────────
+  // Compares the last 28 days (excluding today) against the 28 days before that.
+  // - State 1 (<14 entries): hidden entirely
+  // - State 2 (14–55 entries): "warming up" placeholder
+  // - State 3 (56+ entries): real comparison
+
+  const today = todayStr();
+  const inWindow = (dateStr, fromDaysAgo, toDaysAgo) => {
+    // fromDaysAgo > toDaysAgo (e.g. from=28, to=1 means days -1 to -28)
+    const d = new Date(dateStr+"T12:00:00");
+    const t = new Date(today+"T12:00:00");
+    const diffDays = Math.round((t-d) / 86400000);
+    return diffDays >= toDaysAgo && diffDays <= fromDaysAgo;
+  };
+
+  const recentEntries = logs.filter(l => inWindow(l.date, 28, 1));
+  const priorEntries  = logs.filter(l => inWindow(l.date, 56, 29));
+
+  const trendMetrics = [
+    { key:"overallPain", label:"Pain",    color:pf(3), bg:pb(3) },
+    { key:"fatigue",     label:"Fatigue", color:"#6A4C93", bg:"#EFE6F5" },
+    { key:"skinFlare",   label:"Skin",    color:"#B85C38", bg:"#FFF0E8" },
+    { key:"morning",     label:"Morning", color:"#E65100", bg:"#FFF3E0", max:3 },
+  ].map(m => {
+    const r = avge(recentEntries.map(l => l[m.key]||0));
+    const p = avge(priorEntries.map(l => l[m.key]||0));
+    if (r===null || p===null) return null;
+    const diff = +(r-p).toFixed(2);
+    // direction: stable if abs(diff) < 0.3 (or 0.2 for morning since scale is smaller)
+    const threshold = m.max===3 ? 0.2 : 0.3;
+    const dir = Math.abs(diff) < threshold ? "stable" : (diff < 0 ? "improving" : "worsening");
+    return { ...m, recent:+r.toFixed(1), prior:+p.toFixed(1), diff, dir };
+  }).filter(Boolean);
+
+  const trendDataReliable = recentEntries.length >= 14 && priorEntries.length >= 14;
+
   const foodInsights = ALL_FOODS.map(food => {
     const best = computeLagInsight(l => (l.foods||[]).includes(food.id));
     return best ? { ...food, ...best } : null;
@@ -678,6 +714,63 @@ function InsightsTab({ logs }) {
         <div style={{ fontSize:12, color:"#9a9189", marginBottom:10 }}>Last {trend.length} days logged</div>
         <SimpleLineChart data={trend}/>
       </Card>
+
+      {/* Trend Direction — three states */}
+      {n >= 14 && !trendDataReliable && (
+        <Card title="Trend Direction" emoji="📈" style={{ background:"#F5F0EB", border:"1.5px dashed #C9BBAB" }}>
+          <p style={{ fontSize:13, color:"#1e3d2f", lineHeight:1.6, margin:"0 0 10px" }}>
+            This card unlocks at <strong>8 weeks of data</strong>, so we can fairly compare your last month against the previous month.
+          </p>
+          <div style={{ background:"#fff", borderRadius:9, padding:"10px 12px", marginBottom:10 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
+              <span style={{ fontSize:12, color:"#7a7069" }}>Progress</span>
+              <span style={{ fontSize:12, fontWeight:700, color:"#2C5F4A" }}>{n} / 56 days</span>
+            </div>
+            <div style={{ height:8, background:"#F0E8E0", borderRadius:4, overflow:"hidden" }}>
+              <div style={{ width:`${Math.min(100,(n/56)*100)}%`, height:"100%",
+                background:"linear-gradient(to right,#81C784,#2C5F4A)", borderRadius:4, transition:"width .3s" }}/>
+            </div>
+          </div>
+          <p style={{ fontSize:12, color:"#9a9189", margin:0, fontStyle:"italic" }}>
+            About <strong>{Math.max(1, 56-n)} more day{56-n===1?"":"s"}</strong> of logging to go. Once unlocked, you'll see whether pain, fatigue, skin and morning soreness are trending better or worse than the previous month.
+          </p>
+        </Card>
+      )}
+
+      {trendDataReliable && (
+        <Card title="Trend Direction" emoji="📈">
+          <p style={{ fontSize:12, color:"#9a9189", margin:"0 0 14px", lineHeight:1.6 }}>
+            Last 28 days vs the previous 28 days. <span style={{ color:"#2C5F4A", fontWeight:600 }}>↘ improving</span> · <span style={{ color:"#9a9189" }}>→ stable</span> · <span style={{ color:"#C62828", fontWeight:600 }}>↗ worsening</span>
+          </p>
+          {trendMetrics.map(m => {
+            const arrow = m.dir === "improving" ? "↘" : m.dir === "worsening" ? "↗" : "→";
+            const arrowColor = m.dir === "improving" ? "#2C5F4A" : m.dir === "worsening" ? "#C62828" : "#9a9189";
+            return (
+              <div key={m.key} style={{ display:"flex", alignItems:"center", gap:12, padding:"10px 0",
+                borderBottom:"1px solid #F0E8E0" }}>
+                <div style={{ flex:1 }}>
+                  <div style={{ fontSize:13, fontWeight:600, color:"#1e3d2f" }}>{m.label}</div>
+                  <div style={{ fontSize:11, color:"#9a9189", marginTop:2 }}>
+                    {m.recent} now · {m.prior} prior month
+                  </div>
+                </div>
+                <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                  <span style={{ fontSize:22, fontWeight:800, color:arrowColor, lineHeight:1 }}>{arrow}</span>
+                  <div style={{ textAlign:"right", minWidth:54 }}>
+                    <div style={{ fontSize:14, fontWeight:700, color:arrowColor, lineHeight:1 }}>
+                      {m.diff>0?"+":""}{m.diff}
+                    </div>
+                    <div style={{ fontSize:10, color:"#9a9189", marginTop:3, textTransform:"capitalize" }}>{m.dir}</div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+          <div style={{ fontSize:12, color:"#9a9189", fontStyle:"italic", marginTop:10, lineHeight:1.5 }}>
+            Based on {recentEntries.length} recent vs {priorEntries.length} prior days. Differences below 0.3 are treated as stable noise.
+          </div>
+        </Card>
+      )}
 
       <Card title="Daily Averages" emoji="🌡️">
         <div style={{ display:"flex", gap:10 }}>
