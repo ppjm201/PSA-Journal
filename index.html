@@ -113,6 +113,185 @@ function writeLogs(logs) {
   return true;
 }
 
+// ─── Demo data generator ─────────────────────────────────────────────────────
+// Creates 60 days of synthetic but realistic PsA data with built-in causal
+// patterns the insights engine can detect:
+//   - Dairy raises pain ~1.0 points 2 days later  (lag analysis)
+//   - Alcohol raises pain ~0.7 points the next day (lag analysis)
+//   - Sleep <6h raises pain ~0.5 points next day  (sleep correlation)
+//   - Exercise lowers pain ~0.4 points same day   (exercise correlation)
+//   - Skin and joint flares loosely co-occur      (skin-joint connection)
+//   - Two distinct flare clusters near start of period (Trend Direction shows improvement)
+//   - Right knee, left fingers, lower back are her chronic problem joints
+
+function generateDemoData() {
+  const days = 60;
+  const today = new Date(todayStr()+"T12:00:00");
+  const entries = [];
+
+  // Random helper with seedable feel
+  const rand = () => Math.random();
+  const pick = (arr, p=0.5) => rand() < p ? arr : null;
+  const clamp = (v, lo=0, hi=5) => Math.max(lo, Math.min(hi, v));
+  const round = v => Math.round(v);
+
+  // First, create base entries
+  for (let i = days-1; i >= 0; i--) {
+    const date = new Date(today);
+    date.setDate(date.getDate() - i);
+    const dateStr = date.toISOString().split("T")[0];
+    const dayIndex = days - 1 - i;  // 0 = oldest, 59 = today
+
+    // Base pain level — flare clusters early in period for trend improvement
+    let basePain = 1.5 + rand()*0.8;  // baseline 1.5-2.3
+    if (dayIndex >= 5 && dayIndex <= 9)   basePain += 1.8;   // early flare cluster
+    if (dayIndex >= 18 && dayIndex <= 21) basePain += 1.5;   // second flare cluster
+    if (dayIndex >= 45) basePain -= 0.4;                      // gradually improving
+
+    // Decide foods, alcohol, exercise, sleep first — they'll feed into pain
+    const ateDairy   = rand() < 0.45;
+    const ateGluten  = rand() < 0.5;
+    const ateProcessed = rand() < 0.3;
+    const ateFried   = rand() < 0.2;
+    const ateSugar   = rand() < 0.4;
+    const ateOilyFish = rand() < 0.25;
+    const ateVeg     = rand() < 0.7;
+    const ateOliveOil = rand() < 0.5;
+    const ateBerries = rand() < 0.3;
+
+    const dayOfWeek = date.getDay(); // 0=Sun, 6=Sat
+    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+    const alcohol = isWeekend && rand() < 0.6 ? 1 + Math.floor(rand()*3) : (rand() < 0.15 ? 1 : 0);
+
+    const exerciseRoll = rand();
+    const exercise = exerciseRoll < 0.5 ? "None"
+      : exerciseRoll < 0.7 ? "Walking"
+      : exerciseRoll < 0.85 ? "Yoga / Stretching"
+      : exerciseRoll < 0.95 ? "Swimming" : "Cycling";
+    const exerciseMins = exercise === "None" ? 0 : 15 + Math.floor(rand()*4)*15;
+
+    const sleep = round((6.5 + (rand()-0.5)*3.5) * 2) / 2;  // 4.5-9 in 0.5 steps
+
+    const foods = [];
+    if (ateDairy)     foods.push("dairy");
+    if (ateGluten)    foods.push("gluten");
+    if (ateProcessed) foods.push("processed");
+    if (ateFried)     foods.push("fried");
+    if (ateSugar)     foods.push("sugar");
+    if (rand() < 0.2) foods.push("red-meat");
+    if (rand() < 0.15) foods.push("eggs");
+    if (ateOilyFish)  foods.push("oily-fish");
+    if (ateVeg)       foods.push("vegetables");
+    if (ateOliveOil)  foods.push("olive-oil");
+    if (ateBerries)   foods.push("berries");
+    if (rand() < 0.2) foods.push("nuts");
+    if (rand() < 0.1) foods.push("turmeric");
+    if (rand() < 0.15) foods.push("fermented");
+
+    entries.push({
+      _ateDairy: ateDairy,
+      _alcohol: alcohol,
+      _sleep: sleep,
+      _exercise: exercise !== "None",
+      basePain,
+      date: dateStr,
+      foods,
+      exercise,
+      exerciseMins,
+      alcohol,
+      sleep,
+    });
+  }
+
+  // Apply lag effects: pain depends on yesterday's alcohol/sleep and 2-days-ago dairy
+  return entries.map((e, i) => {
+    let pain = e.basePain;
+    if (i >= 1) {
+      const yesterday = entries[i-1];
+      if (yesterday._alcohol > 0) pain += 0.7 + rand()*0.4;
+      if (yesterday._sleep < 6)   pain += 0.5 + rand()*0.3;
+    }
+    if (i >= 2) {
+      const twoDaysAgo = entries[i-2];
+      if (twoDaysAgo._ateDairy) pain += 0.9 + rand()*0.4;
+    }
+    if (e._exercise) pain -= 0.4 + rand()*0.2;
+    pain += (rand()-0.5)*0.6;  // small noise
+    const overallPain = clamp(round(pain));
+
+    // Joint pain — chronic problem joints, others occasional
+    const joints = {};
+    const swelling = {};
+    const chronic = ["knee_r","fingers_l","lower_back"];
+    chronic.forEach(jid => {
+      const jp = clamp(round(overallPain - 0.3 + (rand()-0.5)*1.5));
+      if (jp > 0) joints[jid] = jp;
+      if (jp >= 3 && rand() < 0.4) swelling[jid] = true;
+    });
+    if (overallPain >= 3) {
+      // On bad days, more joints affected
+      const extras = ["wrist_r","fingers_r","ankle_l","neck"];
+      extras.forEach(jid => {
+        if (rand() < 0.5) {
+          const jp = clamp(round(overallPain - 1 + (rand()-0.5)*1.2));
+          if (jp > 0) joints[jid] = jp;
+        }
+      });
+    }
+
+    // Morning soreness: roughly tracks pain
+    const morning = overallPain >= 4 ? (rand() < 0.7 ? 3 : 2)
+                  : overallPain >= 2 ? (rand() < 0.6 ? 2 : 1)
+                  : (rand() < 0.7 ? 1 : 2);
+
+    // Fatigue tracks pain with noise
+    const fatigue = clamp(round(overallPain - 0.3 + (rand()-0.5)*1.4));
+
+    // Skin flare — partially correlated with joint flare, slower-moving
+    let skinBase = 1.2 + (i / days) * 0.5; // gradually trending up
+    if (overallPain >= 3 && rand() < 0.6) skinBase += 1;
+    if (i >= 10 && i <= 14) skinBase += 1.5; // dedicated skin flare period
+    const skinFlare = clamp(round(skinBase + (rand()-0.5)*1.2));
+
+    // Stress — mild correlation with pain
+    const stress = clamp(round(2 + (overallPain-2)*0.4 + (rand()-0.5)*1.5));
+
+    // Weather — random selection
+    const weatherOpts = ["☀️ Sunny","⛅ Cloudy","🌧️ Rainy","🌬️ Windy","❄️ Cold","💧 Humid","🌡️ Hot"];
+    const weather = [];
+    weather.push(weatherOpts[Math.floor(rand()*weatherOpts.length)]);
+    if (rand() < 0.3) weather.push(weatherOpts[Math.floor(rand()*weatherOpts.length)]);
+
+    // Notes on a few days
+    let notes = "";
+    if (overallPain >= 4 && rand() < 0.5) {
+      const flareNotes = ["Tough day. Difficult getting out of bed.","Struggled to grip mug at breakfast.","Cancelled plans, needed to rest.","Pain worse than usual — could barely walk by evening.","Took extra anti-inflammatories."];
+      notes = flareNotes[Math.floor(rand()*flareNotes.length)];
+    } else if (overallPain <= 1 && rand() < 0.3) {
+      const goodNotes = ["Good day overall, felt almost normal.","Energy levels much better today.","Joints felt looser than usual."];
+      notes = goodNotes[Math.floor(rand()*goodNotes.length)];
+    }
+
+    return {
+      date: e.date,
+      overallPain,
+      joints,
+      swelling,
+      foods: e.foods,
+      exercise: e.exercise,
+      exerciseMins: e.exerciseMins,
+      alcohol: e.alcohol,
+      stress,
+      sleep: e.sleep,
+      weather,
+      notes,
+      skinFlare,
+      fatigue,
+      morning,
+    };
+  });
+}
+
 // ─── Small components ─────────────────────────────────────────────────────────
 
 function Card({ title, emoji, children, style }) {
@@ -1066,7 +1245,7 @@ function LogTab({ log, setLog, onSave, saveMsg, onResetToToday, logs }) {
 
 // ─── History Tab ──────────────────────────────────────────────────────────────
 
-function HistoryTab({ logs, onExport, onImport, onEditEntry, onDeleteEntry, onAddMissedDay }) {
+function HistoryTab({ logs, onExport, onImport, onEditEntry, onDeleteEntry, onAddMissedDay, onLoadDemo, onWipeAll }) {
   const fileRef = useRef(null);
   const [missedDate, setMissedDate] = useState("");
 
@@ -1110,6 +1289,7 @@ function HistoryTab({ logs, onExport, onImport, onEditEntry, onDeleteEntry, onAd
         <div style={{ fontFamily:"'Lora',serif", fontSize:20, color:"#1e3d2f", marginBottom:8 }}>No entries yet</div>
         <div style={{ fontSize:14, color:"#9a9189", lineHeight:1.7 }}>Use the Today tab to log your first entry.</div>
       </div>
+      <DemoPanel onLoadDemo={onLoadDemo} onWipeAll={onWipeAll} hasData={false}/>
     </div>
   );
 
@@ -1189,6 +1369,40 @@ function HistoryTab({ logs, onExport, onImport, onEditEntry, onDeleteEntry, onAd
           </Card>
         );
       })}
+
+      <DemoPanel onLoadDemo={onLoadDemo} onWipeAll={onWipeAll} hasData={logs.length > 0}/>
+    </div>
+  );
+}
+
+function DemoPanel({ onLoadDemo, onWipeAll, hasData }) {
+  return (
+    <div style={{ marginTop:24, marginBottom:24, padding:"16px 18px", borderRadius:14,
+      background:"#F5F0EB", border:"1px solid #E2D9CE" }}>
+      <div style={{ fontFamily:"'Lora',serif", fontWeight:700, fontSize:14, color:"#1e3d2f", marginBottom:6 }}>
+        🧪 Test the app with demo data
+      </div>
+      <div style={{ fontSize:12, color:"#7a7069", marginBottom:12, lineHeight:1.6 }}>
+        Loads 60 days of realistic example entries with built-in patterns, so you can see what insights and the doctor PDF look like at full scale. Can be wiped any time.
+      </div>
+      <div style={{ display:"flex", gap:8 }}>
+        <button onClick={onLoadDemo} style={{
+          flex:1, padding:"9px 0", borderRadius:9, border:"1.5px solid #2C5F4A",
+          background:"#fff", color:"#2C5F4A", cursor:"pointer",
+          fontSize:12, fontWeight:600,
+        }}>
+          🧪 Load demo data
+        </button>
+        {hasData && (
+          <button onClick={onWipeAll} style={{
+            flex:1, padding:"9px 0", borderRadius:9, border:"1.5px solid #B71C1C",
+            background:"#fff", color:"#B71C1C", cursor:"pointer",
+            fontSize:12, fontWeight:600,
+          }}>
+            🗑️ Wipe all data
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -1748,6 +1962,30 @@ function PsATracker() {
     setLog(todayEntry ? { ...emptyLog(), ...todayEntry } : emptyLog());
   };
 
+  const onLoadDemo = () => {
+    const proceed = logs.length === 0
+      ? confirm("Load 60 days of demo data? This shows what insights look like with a full dataset. You can wipe it any time.")
+      : confirm(`You already have ${logs.length} entries. Loading demo data will MERGE 60 days of fake entries with your real data — some real entries may be overwritten by demo ones on the same dates.\n\nWe strongly recommend exporting a backup first.\n\nContinue?`);
+    if (!proceed) return;
+    const demo = generateDemoData();
+    const merged = Object.values(
+      [...logs, ...demo].reduce((acc,l) => ({ ...acc, [l.date]:l }), {})
+    ).sort((a,b) => a.date.localeCompare(b.date));
+    writeLogs(merged);
+    setLogs(merged);
+    setLog(emptyLog());
+    alert(`Loaded ${demo.length} days of demo data. Open the Insights tab to see the full picture!`);
+  };
+
+  const onWipeAll = () => {
+    if (!confirm(`⚠️ This will permanently delete ALL ${logs.length} entries. This cannot be undone.\n\nWe strongly recommend exporting a backup first.\n\nAre you sure?`)) return;
+    if (!confirm("Really wipe everything? Last chance to cancel.")) return;
+    writeLogs([]);
+    setLogs([]);
+    setLog(emptyLog());
+    setTab("log");
+  };
+
   const onExport = () => {
     const blob = new Blob([JSON.stringify(logs, null, 2)], { type:"application/json" });
     const url  = URL.createObjectURL(blob);
@@ -1808,7 +2046,7 @@ function PsATracker() {
 
       <main style={{ padding:"16px 16px 0" }}>
         {tab==="log"      && <LogTab      log={log} setLog={setLog} onSave={onSave} saveMsg={saveMsg} onResetToToday={onResetToToday} logs={logs}/>}
-        {tab==="history"  && <HistoryTab  logs={logs} onExport={onExport} onImport={onImport} onEditEntry={onEditEntry} onDeleteEntry={onDeleteEntry} onAddMissedDay={onAddMissedDay}/>}
+        {tab==="history"  && <HistoryTab  logs={logs} onExport={onExport} onImport={onImport} onEditEntry={onEditEntry} onDeleteEntry={onDeleteEntry} onAddMissedDay={onAddMissedDay} onLoadDemo={onLoadDemo} onWipeAll={onWipeAll}/>}
         {tab==="insights" && <InsightsTab logs={logs} onEditEntry={onEditEntry} onAddMissedDay={onAddMissedDay}/>}
       </main>
     </div>
