@@ -207,9 +207,10 @@ function SimpleLineChart({ data }) {
 
 // ─── Log Tab ─────────────────────────────────────────────────────────────────
 
-function LogTab({ log, setLog, onSave, saveMsg, onResetToToday }) {
+function LogTab({ log, setLog, onSave, saveMsg, onResetToToday, logs }) {
   const [openJoint, setOpenJoint] = useState(null);
   const isPast = log.date !== todayStr();
+  const isNewEntry = !logs.some(l => l.date === log.date);
   const editDateLabel = new Date(log.date+"T12:00:00").toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"long"});
 
   const toggle = (field, id) => setLog(p => {
@@ -225,7 +226,7 @@ function LogTab({ log, setLog, onSave, saveMsg, onResetToToday }) {
           justifyContent:"space-between", gap:10 }}>
           <div>
             <div style={{ fontFamily:"'Lora',serif", fontWeight:700, fontSize:14, color:"#E65100" }}>
-              ✏️ Editing past entry
+              {isNewEntry ? "➕ Logging a missed day" : "✏️ Editing past entry"}
             </div>
             <div style={{ fontSize:12, color:"#7a7069", marginTop:2 }}>{editDateLabel}</div>
           </div>
@@ -418,7 +419,7 @@ function LogTab({ log, setLog, onSave, saveMsg, onResetToToday }) {
           color:"#fff", border:"none", borderRadius:13, fontSize:16,
           fontFamily:"'Lora',serif", fontWeight:700, cursor:"pointer",
           letterSpacing:.5, boxShadow:"0 4px 16px rgba(44,95,74,.35)", transition:"background .3s",
-        }}>{saveMsg || (isPast ? "Update Entry" : "Save Today's Entry")}</button>
+        }}>{saveMsg || (isPast ? (isNewEntry ? "Save Entry" : "Update Entry") : "Save Today's Entry")}</button>
       </div>
     </div>
   );
@@ -426,20 +427,56 @@ function LogTab({ log, setLog, onSave, saveMsg, onResetToToday }) {
 
 // ─── History Tab ──────────────────────────────────────────────────────────────
 
-function HistoryTab({ logs, onExport, onImport, onEditEntry, onDeleteEntry }) {
+function HistoryTab({ logs, onExport, onImport, onEditEntry, onDeleteEntry, onAddMissedDay }) {
   const fileRef = useRef(null);
+  const [missedDate, setMissedDate] = useState("");
+
+  const handleAddMissed = () => {
+    if (!missedDate) return;
+    onAddMissedDay(missedDate);
+    setMissedDate("");
+  };
+
+  const AddPastDayPanel = () => (
+    <div style={{ background:"#fff", borderRadius:14, padding:"14px 16px", marginBottom:14,
+      border:"1.5px dashed #B85C38" }}>
+      <div style={{ fontFamily:"'Lora',serif", fontWeight:700, fontSize:14, color:"#1e3d2f", marginBottom:8 }}>
+        ➕ Log a missed day
+      </div>
+      <div style={{ fontSize:12, color:"#9a9189", marginBottom:10 }}>
+        Forgot to log a day? Pick the date and fill it in.
+      </div>
+      <div style={{ display:"flex", gap:8 }}>
+        <input type="date" value={missedDate} max={todayStr()}
+          onChange={e=>setMissedDate(e.target.value)}
+          style={{ flex:1, padding:"9px 12px", borderRadius:9,
+            border:"1.5px solid #E2D9CE", fontSize:14, fontFamily:"inherit",
+            background:"#FAF7F2", color:"#1e3d2f", outline:"none" }}/>
+        <button onClick={handleAddMissed} disabled={!missedDate}
+          style={{ padding:"9px 18px", borderRadius:9, border:"none",
+            background: missedDate ? "#B85C38" : "#E2D9CE",
+            color:"#fff", cursor: missedDate ? "pointer" : "not-allowed",
+            fontSize:13, fontWeight:600, whiteSpace:"nowrap" }}>
+          Add
+        </button>
+      </div>
+    </div>
+  );
 
   if (!logs.length) return (
-    <div style={{ padding:"60px 0", textAlign:"center" }}>
-      <div style={{ fontSize:52, marginBottom:14 }}>📖</div>
-      <div style={{ fontFamily:"'Lora',serif", fontSize:20, color:"#1e3d2f", marginBottom:8 }}>No entries yet</div>
-      <div style={{ fontSize:14, color:"#9a9189", lineHeight:1.7 }}>Use the Today tab to log your first entry.</div>
+    <div>
+      <AddPastDayPanel/>
+      <div style={{ padding:"40px 0", textAlign:"center" }}>
+        <div style={{ fontSize:52, marginBottom:14 }}>📖</div>
+        <div style={{ fontFamily:"'Lora',serif", fontSize:20, color:"#1e3d2f", marginBottom:8 }}>No entries yet</div>
+        <div style={{ fontSize:14, color:"#9a9189", lineHeight:1.7 }}>Use the Today tab to log your first entry.</div>
+      </div>
     </div>
   );
 
   return (
     <div>
-      <div style={{ display:"flex", gap:10, marginBottom:16 }}>
+      <div style={{ display:"flex", gap:10, marginBottom:14 }}>
         <button onClick={onExport} style={{ flex:1, padding:"10px 0", borderRadius:10,
           border:"1.5px solid #2C5F4A", background:"#fff", color:"#2C5F4A",
           cursor:"pointer", fontSize:13, fontWeight:600 }}>⬇ Export backup</button>
@@ -449,6 +486,8 @@ function HistoryTab({ logs, onExport, onImport, onEditEntry, onDeleteEntry }) {
         <input ref={fileRef} type="file" accept=".json" style={{ display:"none" }}
           onChange={e=>{ const f=e.target.files?.[0]; if(f) onImport(f); e.target.value=""; }}/>
       </div>
+
+      <AddPastDayPanel/>
 
       <div style={{ fontSize:12, color:"#9a9189", marginBottom:10, paddingLeft:4, fontStyle:"italic" }}>
         Tap any entry to edit it
@@ -768,6 +807,20 @@ function PsATracker() {
     window.scrollTo({ top:0, behavior:"smooth" });
   };
 
+  const onAddMissedDay = (date) => {
+    if (!date) return;
+    if (date > todayStr()) { alert("You can't add an entry for a date in the future."); return; }
+    const existing = logs.find(l => l.date === date);
+    if (existing) {
+      // Date already has an entry — just open it for editing
+      onEditEntry(date);
+      return;
+    }
+    setLog({ ...emptyLog(), date });
+    setTab("log");
+    window.scrollTo({ top:0, behavior:"smooth" });
+  };
+
   const onDeleteEntry = (date) => {
     if (!confirm(`Delete the entry for ${new Date(date+"T12:00:00").toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"long"})}? This can't be undone.`)) return;
     const updated = logs.filter(l => l.date !== date);
@@ -841,8 +894,8 @@ function PsATracker() {
       </nav>
 
       <main style={{ padding:"16px 16px 0" }}>
-        {tab==="log"      && <LogTab      log={log} setLog={setLog} onSave={onSave} saveMsg={saveMsg} onResetToToday={onResetToToday}/>}
-        {tab==="history"  && <HistoryTab  logs={logs} onExport={onExport} onImport={onImport} onEditEntry={onEditEntry} onDeleteEntry={onDeleteEntry}/>}
+        {tab==="log"      && <LogTab      log={log} setLog={setLog} onSave={onSave} saveMsg={saveMsg} onResetToToday={onResetToToday} logs={logs}/>}
+        {tab==="history"  && <HistoryTab  logs={logs} onExport={onExport} onImport={onImport} onEditEntry={onEditEntry} onDeleteEntry={onDeleteEntry} onAddMissedDay={onAddMissedDay}/>}
         {tab==="insights" && <InsightsTab logs={logs}/>}
       </main>
     </div>
