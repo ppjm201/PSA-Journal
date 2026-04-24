@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -12,8 +13,11 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lora:wght@400;600;700;800&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600&display=swap">
 
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+
 <script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
+
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 
 <style>
@@ -25,6 +29,7 @@
   #root { min-height:100vh; }
   .loader { display:flex; align-items:center; justify-content:center; height:100vh; font-family:'Lora',serif; color:#2C5F4A; font-size:18px; }
 </style>
+
 </head>
 <body>
 <div id="root"><div class="loader">Loading your journal…</div></div>
@@ -56,6 +61,7 @@ const TRIGGERS = [
   { id:"nightshades",   label:"Nightshades",    emoji:"🍅" },
   { id:"red-meat",      label:"Red Meat",       emoji:"🥩" },
   { id:"eggs",          label:"Eggs",           emoji:"🥚" },
+  { id:"coffee",        label:"Coffee",         emoji:"☕" },
 ];
 
 const POSITIVES = [
@@ -705,9 +711,13 @@ function generateDoctorReport(allLogs, { startDate, endDate, patientName }) {
     summaryLines.push(`The most affected joints were ${topNames}.`);
   }
 
-  // Sentence 5: comorbid skin
+  // Sentence 5: psoriasis severity (only mention if it's reached a level worth noting)
   if (avgSkin >= 1.5) {
-    summaryLines.push(`Psoriasis was active throughout this period, averaging ${avgSkin.toFixed(1)}/5 in severity.`);
+    const skinDescriptor = avgSkin < 2.5 ? "mild to moderate"
+                         : avgSkin < 3.5 ? "moderate"
+                         : avgSkin < 4.5 ? "moderate to severe"
+                         : "severe";
+    summaryLines.push(`Psoriasis severity averaged ${avgSkin.toFixed(1)}/5 (${skinDescriptor}) across this period.`);
   }
 
   // Sentence 6: fatigue
@@ -2467,5 +2477,6 @@ function PsATracker() {
 
 ReactDOM.createRoot(document.getElementById('root')).render(<PsATracker />);
 </script>
+
 </body>
 </html>
