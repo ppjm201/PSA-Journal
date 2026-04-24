@@ -582,6 +582,38 @@ function InsightsTab({ logs }) {
   const avge = arr => arr.length ? arr.reduce((s,x)=>s+x,0)/arr.length : null;
   const fmt  = v => v===null ? "–" : v.toFixed(1);
 
+  // ─── Lag analysis helpers ─────────────────────────────────────────────────
+  // Triggers in PsA often affect symptoms 1-3 days later, not same-day.
+  // We check lags 0, 1, 2 days and report the strongest signal for each trigger.
+
+  const byDate = {};
+  logs.forEach(l => { byDate[l.date] = l; });
+
+  const addDays = (dateStr, days) => {
+    const d = new Date(dateStr + "T12:00:00");
+    d.setDate(d.getDate() + days);
+    return d.toISOString().split("T")[0];
+  };
+
+  const lagLabel = lag => lag === 0 ? "same day" : lag === 1 ? "next day" : `${lag} days later`;
+
+  // Returns the lag (0–2) with the strongest pain effect for a given predicate
+  const computeLagInsight = (predicate) => {
+    const results = [0,1,2].map(lag => {
+      const yes = [], no = [];
+      logs.forEach(l => {
+        const target = byDate[addDays(l.date, lag)];
+        if (!target) return;          // missing day — can't compare
+        (predicate(l) ? yes : no).push(target.overallPain);
+      });
+      if (yes.length < 3 || no.length < 3) return null;
+      const a = avge(yes), b = avge(no);
+      return { lag, diff: +(a-b).toFixed(1), nYes: yes.length, nNo: no.length };
+    }).filter(Boolean);
+    if (!results.length) return null;
+    return results.reduce((best, r) => Math.abs(r.diff) > Math.abs(best.diff) ? r : best);
+  };
+
   const trend = logs.slice(-21).map(l=>({ date:l.date.slice(5), pain:l.overallPain }));
 
   // Multi-metric trend (pain, fatigue, skin) over last 21 days
@@ -599,13 +631,10 @@ function InsightsTab({ logs }) {
   const painOnSkin      = avge(skinFlareDays.map(l=>l.overallPain));
   const painOffSkin     = avge(noSkinFlareDays.map(l=>l.overallPain));
 
-  const foodInsights = ALL_FOODS.map(food=>{
-    const w  = logs.filter(l=>(l.foods||[]).includes(food.id)).map(l=>l.overallPain);
-    const wo = logs.filter(l=>!(l.foods||[]).includes(food.id)).map(l=>l.overallPain);
-    if(!w.length||!wo.length) return null;
-    const aw=avge(w), ao=avge(wo);
-    return {...food, aw:+aw.toFixed(1), ao:+ao.toFixed(1), diff:+(aw-ao).toFixed(1), n:w.length};
-  }).filter(Boolean).sort((a,b)=>Math.abs(b.diff)-Math.abs(a.diff));
+  const foodInsights = ALL_FOODS.map(food => {
+    const best = computeLagInsight(l => (l.foods||[]).includes(food.id));
+    return best ? { ...food, ...best } : null;
+  }).filter(Boolean).sort((a,b) => Math.abs(b.diff) - Math.abs(a.diff));
 
   const exDays   = logs.filter(l=>l.exercise&&l.exercise!=="None");
   const noExDays = logs.filter(l=>!l.exercise||l.exercise==="None");
@@ -616,6 +645,8 @@ function InsightsTab({ logs }) {
   const noAlcDays = logs.filter(l=>(l.alcohol||0)===0);
   const alcAvg    = avge(alcDays.map(l=>l.overallPain));
   const noAlcAvg  = avge(noAlcDays.map(l=>l.overallPain));
+  // Lag analysis for alcohol — known to often hit 24-48h later
+  const alcLag    = computeLagInsight(l => (l.alcohol||0) > 0);
 
   const sleepBins = [
     {label:"< 6h", data:logs.filter(l=>l.sleep<6)},
@@ -718,11 +749,17 @@ function InsightsTab({ logs }) {
 
       {alcAvg!==null&&noAlcAvg!==null&&alcDays.length>=2&&(
         <Card title="Alcohol Impact" emoji="🍷">
-          <div style={{ display:"flex", gap:10 }}>
+          <div style={{ display:"flex", gap:10, marginBottom: alcLag ? 12 : 0 }}>
             <SB label="Alcohol days" value={fmt(alcAvg)}   sub={`${alcDays.length} days`}
               color={alcAvg>noAlcAvg?"#C62828":"#2C5F4A"} bg={alcAvg>noAlcAvg?"#FFEBEE":"#E8F5E9"}/>
             <SB label="No alcohol"   value={fmt(noAlcAvg)} sub={`${noAlcDays.length} days`} color="#2C5F4A" bg="#E8F5E9"/>
           </div>
+          {alcLag && Math.abs(alcLag.diff) >= 0.3 && (
+            <div style={{ padding:12, background: alcLag.diff>0 ? "#FFEBEE" : "#E8F5E9",
+              borderRadius:9, fontSize:13, color:"#1e3d2f", lineHeight:1.6 }}>
+              {alcLag.diff > 0 ? "⚠️" : "💡"} Strongest effect: pain runs <strong>{alcLag.diff>0?"+":""}{alcLag.diff}</strong> points {lagLabel(alcLag.lag)} after drinking.
+            </div>
+          )}
         </Card>
       )}
 
@@ -737,14 +774,19 @@ function InsightsTab({ logs }) {
       {foodInsights.length>0&&(
         <Card title="Food Correlations" emoji="🍽️">
           <p style={{ fontSize:12, color:"#9a9189", margin:"0 0 12px", lineHeight:1.6 }}>
-            Change in average pain on days she ate each food. Positive = higher pain, negative = lower.
+            Each food is checked for effects on pain <strong>same-day, next-day, and 2 days later</strong> — the strongest signal is shown. Positive = higher pain, negative = lower.
           </p>
           {foodInsights.slice(0,8).map(f=>(
-            <div key={f.id} style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
+            <div key={f.id} style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12 }}>
               <span style={{ fontSize:13, width:22, textAlign:"center" }}>{f.emoji}</span>
-              <span style={{ fontSize:12, flex:1, color:"#1e3d2f" }}>{f.label}</span>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ fontSize:12, color:"#1e3d2f" }}>{f.label}</div>
+                <div style={{ fontSize:10, color:"#9a9189", marginTop:1 }}>
+                  {lagLabel(f.lag)} · {f.nYes} day{f.nYes===1?"":"s"}
+                </div>
+              </div>
               <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                <div style={{ width:70, height:6, background:"#F0E8E0", borderRadius:3, overflow:"hidden" }}>
+                <div style={{ width:60, height:6, background:"#F0E8E0", borderRadius:3, overflow:"hidden" }}>
                   <div style={{ width:`${Math.min(100,Math.abs(f.diff)/2*100)}%`, height:"100%",
                     background:f.diff>0?"#EF5350":"#4CAF50", borderRadius:3 }}/>
                 </div>
@@ -755,8 +797,8 @@ function InsightsTab({ logs }) {
               </div>
             </div>
           ))}
-          <div style={{ fontSize:12, color:"#9a9189", fontStyle:"italic", marginTop:8 }}>
-            Based on {n} entries. Aim for 4+ weeks for reliable patterns.
+          <div style={{ fontSize:12, color:"#9a9189", fontStyle:"italic", marginTop:8, lineHeight:1.5 }}>
+            Based on {n} entries. Foods with fewer than 3 days of data either way are hidden. Aim for 4+ weeks of consistent logging for reliable patterns.
           </div>
         </Card>
       )}
