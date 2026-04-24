@@ -14,6 +14,7 @@
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 
 <style>
   * { box-sizing:border-box; margin:0; }
@@ -205,7 +206,504 @@ function SimpleLineChart({ data }) {
   );
 }
 
-// ─── Calendar Heatmap ─────────────────────────────────────────────────────────
+// ─── Doctor Report PDF Generator ──────────────────────────────────────────────
+
+function generateDoctorReport(allLogs, { startDate, endDate, patientName }) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit:"mm", format:"a4" });
+
+  // A4 dimensions in mm
+  const PAGE_W = 210, PAGE_H = 297;
+  const MARGIN = 15;
+  const CONTENT_W = PAGE_W - MARGIN*2;
+
+  // Filter logs to date range and sort
+  const logs = allLogs
+    .filter(l => l.date >= startDate && l.date <= endDate)
+    .sort((a,b) => a.date.localeCompare(b.date));
+
+  // Helpers
+  const avg = arr => arr.length ? arr.reduce((s,x)=>s+x,0)/arr.length : null;
+  const fmtNum = v => v===null||v===undefined ? "—" : v.toFixed(1);
+  const fmtDate = ds => new Date(ds+"T12:00:00").toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"});
+  const fmtDateShort = ds => new Date(ds+"T12:00:00").toLocaleDateString("en-GB",{day:"numeric",month:"short"});
+
+  // Same colour scale as app, as RGB
+  const PAIN_RGB = [[232,245,233],[200,230,201],[255,249,196],[255,224,178],[255,204,188],[255,205,210]];
+  const PAIN_RGB_FG = [[56,142,60],[46,125,50],[249,168,37],[239,108,0],[191,54,12],[183,28,28]];
+
+  // Track current Y on the page; new pages reset
+  let y = MARGIN;
+
+  const newPageIfNeeded = (needed) => {
+    if (y + needed > PAGE_H - MARGIN) { doc.addPage(); y = MARGIN; addPageHeader(); }
+  };
+  const addPageHeader = () => {
+    doc.setFont("helvetica","normal").setFontSize(8).setTextColor(150,150,150);
+    doc.text(`PsA Journal · ${fmtDate(startDate)} – ${fmtDate(endDate)}`, MARGIN, 10);
+    doc.text(`Page ${doc.internal.getNumberOfPages()}`, PAGE_W - MARGIN, 10, { align:"right" });
+  };
+
+  // ─── PAGE 1: Cover & Summary ────────────────────────────────────────────────
+  addPageHeader();
+  y = MARGIN + 5;
+
+  // Title
+  doc.setFont("helvetica","bold").setFontSize(20).setTextColor(30,61,47);
+  doc.text("PsA Symptom Report", MARGIN, y);
+  y += 8;
+  doc.setFont("helvetica","normal").setFontSize(11).setTextColor(122,112,105);
+  doc.text(`${fmtDate(startDate)} to ${fmtDate(endDate)}`, MARGIN, y);
+  y += 6;
+  if (patientName) {
+    doc.setFontSize(10);
+    doc.text(`Patient: ${patientName}`, MARGIN, y);
+    y += 6;
+  }
+  doc.setFontSize(9).setTextColor(154,145,137);
+  doc.text(`${logs.length} of ${Math.round((new Date(endDate)-new Date(startDate))/86400000)+1} days logged · Generated ${fmtDate(todayStr())}`, MARGIN, y);
+  y += 10;
+
+  // No data guard
+  if (logs.length === 0) {
+    doc.setFontSize(12).setTextColor(120,120,120);
+    doc.text("No entries found in this date range.", MARGIN, y);
+    return doc;
+  }
+
+  // ─── Headline numbers section ───────────────────────────────────────────────
+  doc.setDrawColor(236,229,220).setLineWidth(0.3);
+  doc.line(MARGIN, y, PAGE_W-MARGIN, y);
+  y += 6;
+
+  doc.setFont("helvetica","bold").setFontSize(13).setTextColor(30,61,47);
+  doc.text("Disease Activity", MARGIN, y);
+  y += 7;
+
+  // Calculate metrics
+  const avgPain    = avg(logs.map(l=>l.overallPain||0));
+  const avgFatigue = avg(logs.map(l=>l.fatigue||0));
+  const avgSkin    = avg(logs.map(l=>l.skinFlare||0));
+  const flareDays  = logs.filter(l => (l.overallPain||0) >= 3).length;
+  const flareRate  = logs.length ? Math.round(flareDays/logs.length*100) : 0;
+  const morningCounts = [0,0,0,0];
+  logs.forEach(l => { if (l.morning>=1 && l.morning<=3) morningCounts[l.morning]++; });
+  const morningLogged = morningCounts[1]+morningCounts[2]+morningCounts[3];
+  const veryStiffPct = morningLogged ? Math.round(morningCounts[3]/morningLogged*100) : null;
+
+  // 4-column grid of headline stats
+  const drawStat = (col, label, value, sub) => {
+    const colW = (CONTENT_W - 6) / 4;
+    const x = MARGIN + col * (colW + 2);
+    doc.setFillColor(248,243,237).rect(x, y, colW, 22, "F");
+    doc.setFont("helvetica","bold").setFontSize(18).setTextColor(30,61,47);
+    doc.text(value, x + colW/2, y+10, { align:"center" });
+    doc.setFont("helvetica","normal").setFontSize(8).setTextColor(80,80,80);
+    doc.text(label, x + colW/2, y+15, { align:"center" });
+    if (sub) {
+      doc.setFontSize(7).setTextColor(150,150,150);
+      doc.text(sub, x + colW/2, y+19, { align:"center" });
+    }
+  };
+  drawStat(0, "Avg Pain (/5)",    fmtNum(avgPain),    null);
+  drawStat(1, "Flare Days (≥3)", `${flareDays}`,     `${flareRate}% of logged`);
+  drawStat(2, "Avg Fatigue (/5)", fmtNum(avgFatigue), null);
+  drawStat(3, "Avg Skin (/5)",    fmtNum(avgSkin),    null);
+  y += 27;
+
+  // Morning soreness breakdown
+  if (morningLogged > 0) {
+    doc.setFont("helvetica","bold").setFontSize(11).setTextColor(30,61,47);
+    doc.text("Morning Stiffness", MARGIN, y);
+    y += 6;
+    const labels = ["Fine","Stiff","Very Sore"];
+    const colors = [[200,230,201],[255,224,178],[255,205,210]];
+    const totalW = CONTENT_W;
+    let xPos = MARGIN;
+    [1,2,3].forEach(v => {
+      const pct = morningCounts[v] / morningLogged;
+      const segW = pct * totalW;
+      if (segW > 0) {
+        doc.setFillColor(...colors[v-1]).rect(xPos, y, segW, 6, "F");
+        if (segW > 18) {
+          doc.setFont("helvetica","bold").setFontSize(8).setTextColor(40,40,40);
+          doc.text(`${Math.round(pct*100)}%`, xPos + segW/2, y+4, { align:"center" });
+        }
+        xPos += segW;
+      }
+    });
+    y += 9;
+    doc.setFont("helvetica","normal").setFontSize(8).setTextColor(120,120,120);
+    [1,2,3].forEach((v,i) => {
+      const cx = MARGIN + i * (CONTENT_W/3);
+      doc.setFillColor(...colors[v-1]).rect(cx, y, 3, 3, "F");
+      doc.text(`${labels[i]}: ${morningCounts[v]} day${morningCounts[v]===1?"":"s"}`, cx+5, y+2.5);
+    });
+    y += 10;
+  }
+
+  // ─── Top affected joints ────────────────────────────────────────────────────
+  newPageIfNeeded(60);
+  doc.setDrawColor(236,229,220).line(MARGIN, y, PAGE_W-MARGIN, y);
+  y += 6;
+  doc.setFont("helvetica","bold").setFontSize(13).setTextColor(30,61,47);
+  doc.text("Most Affected Joints", MARGIN, y);
+  y += 7;
+
+  const jointTotals = {};
+  const swellingCounts = {};
+  logs.forEach(l => {
+    Object.entries(l.joints||{}).forEach(([id,p]) => {
+      if (!jointTotals[id]) jointTotals[id] = [];
+      jointTotals[id].push(p);
+    });
+    Object.entries(l.swelling||{}).forEach(([id,s]) => {
+      if (s) swellingCounts[id] = (swellingCounts[id]||0)+1;
+    });
+  });
+  const topJoints = JOINTS
+    .map(j => ({ ...j, avg: avg((jointTotals[j.id]||[]).filter(v=>v>0)),
+                 days:(jointTotals[j.id]||[]).filter(v=>v>0).length,
+                 swelling: swellingCounts[j.id]||0 }))
+    .filter(j => j.avg !== null && j.avg > 0)
+    .sort((a,b) => b.avg - a.avg)
+    .slice(0, 8);
+
+  if (topJoints.length === 0) {
+    doc.setFont("helvetica","italic").setFontSize(10).setTextColor(150,150,150);
+    doc.text("No painful joints recorded in this period.", MARGIN, y);
+    y += 7;
+  } else {
+    // Table headers
+    doc.setFont("helvetica","bold").setFontSize(8).setTextColor(120,120,120);
+    doc.text("JOINT",     MARGIN,        y);
+    doc.text("AVG PAIN",  MARGIN+85,     y);
+    doc.text("DAYS",      MARGIN+115,    y);
+    doc.text("SWOLLEN",   MARGIN+140,    y);
+    y += 4;
+    doc.setDrawColor(236,229,220).line(MARGIN, y, PAGE_W-MARGIN, y);
+    y += 4;
+
+    topJoints.forEach(j => {
+      newPageIfNeeded(8);
+      doc.setFont("helvetica","normal").setFontSize(10).setTextColor(30,61,47);
+      doc.text(j.label, MARGIN, y);
+      // Pain bar
+      const barX = MARGIN + 85, barY = y-3, barW = 25, barH = 4;
+      doc.setFillColor(240,232,224).rect(barX, barY, barW, barH, "F");
+      const fillW = (j.avg/5) * barW;
+      const colorIdx = Math.min(5, Math.round(j.avg));
+      doc.setFillColor(...PAIN_RGB_FG[colorIdx]).rect(barX, barY, fillW, barH, "F");
+      doc.setFont("helvetica","bold").setFontSize(10).setTextColor(...PAIN_RGB_FG[colorIdx]);
+      doc.text(j.avg.toFixed(1), barX+barW+3, y);
+      doc.setFont("helvetica","normal").setTextColor(80,80,80);
+      doc.text(`${j.days}`, MARGIN+115, y);
+      doc.setTextColor(j.swelling>0?59:120, j.swelling>0?130:120, j.swelling>0?246:120);
+      doc.text(j.swelling>0 ? `${j.swelling}d` : "—", MARGIN+140, y);
+      y += 6;
+    });
+    y += 3;
+  }
+
+  // ─── Notable patterns ───────────────────────────────────────────────────────
+  newPageIfNeeded(40);
+  doc.setDrawColor(236,229,220).line(MARGIN, y, PAGE_W-MARGIN, y);
+  y += 6;
+  doc.setFont("helvetica","bold").setFontSize(13).setTextColor(30,61,47);
+  doc.text("Notable Patterns", MARGIN, y);
+  y += 7;
+
+  const patterns = [];
+
+  // Exercise effect
+  const exDays   = logs.filter(l=>l.exercise && l.exercise!=="None");
+  const noExDays = logs.filter(l=>!l.exercise || l.exercise==="None");
+  if (exDays.length>=3 && noExDays.length>=3) {
+    const ex = avg(exDays.map(l=>l.overallPain));
+    const nx = avg(noExDays.map(l=>l.overallPain));
+    if (Math.abs(ex-nx) >= 0.3) {
+      patterns.push(`Exercise: pain averages ${Math.abs(ex-nx).toFixed(1)} points ${ex<nx?"lower":"higher"} on activity days (${exDays.length} active vs ${noExDays.length} rest days).`);
+    }
+  }
+
+  // Alcohol effect (simple same-day for the report)
+  const alcDays   = logs.filter(l=>(l.alcohol||0)>0);
+  const noAlcDays = logs.filter(l=>(l.alcohol||0)===0);
+  if (alcDays.length>=3 && noAlcDays.length>=3) {
+    const a = avg(alcDays.map(l=>l.overallPain));
+    const na = avg(noAlcDays.map(l=>l.overallPain));
+    if (Math.abs(a-na) >= 0.3) {
+      patterns.push(`Alcohol: pain averages ${Math.abs(a-na).toFixed(1)} points ${a>na?"higher":"lower"} on drinking days (${alcDays.length} drinking vs ${noAlcDays.length} dry days).`);
+    }
+  }
+
+  // Sleep
+  const lowSleep  = logs.filter(l=>l.sleep<6).map(l=>l.overallPain);
+  const goodSleep = logs.filter(l=>l.sleep>=7).map(l=>l.overallPain);
+  if (lowSleep.length>=3 && goodSleep.length>=3) {
+    const ls = avg(lowSleep), gs = avg(goodSleep);
+    if (Math.abs(ls-gs) >= 0.3) {
+      patterns.push(`Sleep: pain averages ${Math.abs(ls-gs).toFixed(1)} points ${ls>gs?"higher":"lower"} on nights with under 6 hours sleep.`);
+    }
+  }
+
+  // Skin/joint correlation
+  const skinFlareDays = logs.filter(l=>(l.skinFlare||0)>=2);
+  const clearSkinDays = logs.filter(l=>(l.skinFlare||0)<2);
+  if (skinFlareDays.length>=3 && clearSkinDays.length>=3) {
+    const sf = avg(skinFlareDays.map(l=>l.overallPain));
+    const cs = avg(clearSkinDays.map(l=>l.overallPain));
+    if (Math.abs(sf-cs) >= 0.3) {
+      patterns.push(`Skin–joint link: joint pain averages ${Math.abs(sf-cs).toFixed(1)} points ${sf>cs?"higher":"lower"} on days when skin is also flaring.`);
+    }
+  }
+
+  doc.setFont("helvetica","normal").setFontSize(10).setTextColor(50,50,50);
+  if (patterns.length === 0) {
+    doc.setFont("helvetica","italic").setTextColor(150,150,150);
+    doc.text("No statistically notable patterns detected in this period.", MARGIN, y);
+    y += 7;
+  } else {
+    patterns.forEach(p => {
+      newPageIfNeeded(12);
+      const lines = doc.splitTextToSize("• " + p, CONTENT_W - 4);
+      doc.text(lines, MARGIN, y);
+      y += lines.length * 5 + 2;
+    });
+  }
+
+  // ─── PAGE 2: Visual section ─────────────────────────────────────────────────
+  doc.addPage();
+  y = MARGIN + 5;
+  addPageHeader();
+
+  // Pain trend line chart
+  doc.setFont("helvetica","bold").setFontSize(13).setTextColor(30,61,47);
+  doc.text("Pain Trend Over Time", MARGIN, y);
+  y += 8;
+
+  const chartH = 50;
+  const chartX = MARGIN, chartY = y, chartW = CONTENT_W;
+  // Background
+  doc.setFillColor(252,250,247).rect(chartX, chartY, chartW, chartH, "F");
+  // Grid lines
+  doc.setDrawColor(240,232,224).setLineWidth(0.2);
+  for (let v=0; v<=5; v++) {
+    const gy = chartY + chartH - (v/5)*chartH;
+    doc.line(chartX, gy, chartX+chartW, gy);
+    doc.setFont("helvetica","normal").setFontSize(7).setTextColor(150,150,150);
+    doc.text(`${v}`, chartX-3, gy+1, { align:"right" });
+  }
+  // Plot line
+  if (logs.length > 1) {
+    const xStep = chartW / (logs.length-1);
+    doc.setDrawColor(44,95,74).setLineWidth(0.6);
+    for (let i=1; i<logs.length; i++) {
+      const x1 = chartX + (i-1)*xStep, y1 = chartY + chartH - (logs[i-1].overallPain/5)*chartH;
+      const x2 = chartX + i*xStep,     y2 = chartY + chartH - (logs[i].overallPain/5)*chartH;
+      doc.line(x1, y1, x2, y2);
+    }
+    // Dots
+    logs.forEach((l,i) => {
+      const cx = chartX + i*xStep, cy = chartY + chartH - (l.overallPain/5)*chartH;
+      doc.setFillColor(44,95,74).circle(cx, cy, 0.7, "F");
+    });
+    // X-axis labels (first, middle, last)
+    doc.setFontSize(7).setTextColor(150,150,150);
+    doc.text(fmtDateShort(logs[0].date), chartX, chartY+chartH+5);
+    if (logs.length > 2) {
+      const mid = Math.floor(logs.length/2);
+      doc.text(fmtDateShort(logs[mid].date), chartX + mid*xStep, chartY+chartH+5, { align:"center" });
+    }
+    doc.text(fmtDateShort(logs[logs.length-1].date), chartX+chartW, chartY+chartH+5, { align:"right" });
+  }
+  y += chartH + 10;
+
+  // ─── Calendar heatmap (one mini-calendar per month) ─────────────────────────
+  newPageIfNeeded(50);
+  doc.setFont("helvetica","bold").setFontSize(13).setTextColor(30,61,47);
+  doc.text("Daily Pain Calendar", MARGIN, y);
+  y += 7;
+  doc.setFont("helvetica","normal").setFontSize(8).setTextColor(120,120,120);
+  doc.text("Each cell shows pain level for that day. Empty cells = not logged.", MARGIN, y);
+  y += 6;
+
+  // Build months covered
+  const months = new Set();
+  logs.forEach(l => months.add(l.date.slice(0,7)));
+  const monthList = Array.from(months).sort();
+
+  const byDate = {};
+  logs.forEach(l => { byDate[l.date] = l; });
+
+  // Layout: 2 mini-calendars per row, side by side
+  const calsPerRow = 2;
+  const calGap = 8;
+  const calW = (CONTENT_W - calGap*(calsPerRow-1)) / calsPerRow;
+  const cellSize = calW / 7;
+  const calH = cellSize * 7 + 8; // 6 weeks + header + label
+
+  monthList.forEach((ym, idx) => {
+    const col = idx % calsPerRow;
+    const rowStart = (idx % calsPerRow === 0);
+    if (rowStart) newPageIfNeeded(calH + 5);
+    const cx = MARGIN + col * (calW + calGap);
+    const cy = y;
+
+    // Month label
+    const [yy, mm] = ym.split("-").map(Number);
+    const monthDate = new Date(yy, mm-1, 1);
+    doc.setFont("helvetica","bold").setFontSize(10).setTextColor(30,61,47);
+    doc.text(monthDate.toLocaleDateString("en-GB",{month:"long",year:"numeric"}), cx, cy);
+
+    // Day headers
+    const headY = cy + 3;
+    doc.setFont("helvetica","normal").setFontSize(7).setTextColor(150,150,150);
+    ["M","T","W","T","F","S","S"].forEach((d,i) => {
+      doc.text(d, cx + i*cellSize + cellSize/2, headY+3, { align:"center" });
+    });
+
+    // Cells
+    const firstWeekday = (monthDate.getDay()+6)%7;
+    const daysInMonth = new Date(yy, mm, 0).getDate();
+    const gridY = headY + 5;
+    for (let d=1; d<=daysInMonth; d++) {
+      const dayIndex = firstWeekday + d - 1;
+      const row = Math.floor(dayIndex/7), colIdx = dayIndex%7;
+      const cellX = cx + colIdx*cellSize;
+      const cellY = gridY + row*cellSize;
+      const dateKey = `${ym}-${String(d).padStart(2,"0")}`;
+      const entry = byDate[dateKey];
+      // Background
+      if (entry) {
+        const p = entry.overallPain || 0;
+        doc.setFillColor(...PAIN_RGB[p]).rect(cellX+0.3, cellY+0.3, cellSize-0.6, cellSize-0.6, "F");
+        doc.setFont("helvetica","bold").setFontSize(7).setTextColor(...PAIN_RGB_FG[p]);
+      } else {
+        doc.setFillColor(245,240,235).rect(cellX+0.3, cellY+0.3, cellSize-0.6, cellSize-0.6, "F");
+        doc.setFont("helvetica","normal").setFontSize(7).setTextColor(200,190,180);
+      }
+      doc.text(`${d}`, cellX + cellSize/2, cellY + cellSize/2 + 1.5, { align:"center" });
+    }
+
+    if (col === calsPerRow-1 || idx === monthList.length-1) {
+      y += calH + 5;
+    }
+  });
+
+  // ─── Flare episodes ─────────────────────────────────────────────────────────
+  // A "flare" = 3+ consecutive days with pain >= 3
+  const flares = [];
+  let runStart = null, runDays = [];
+  for (let i=0; i<logs.length; i++) {
+    const l = logs[i];
+    const isFlare = (l.overallPain||0) >= 3;
+    const prev = i>0 ? logs[i-1] : null;
+    const dayGap = prev ? Math.round((new Date(l.date)-new Date(prev.date))/86400000) : 1;
+    if (isFlare && (runStart === null || dayGap > 1)) {
+      // Flush previous run if existed
+      if (runStart !== null && runDays.length >= 3) {
+        flares.push({ start: runStart, end: runDays[runDays.length-1].date, peak: Math.max(...runDays.map(d=>d.overallPain||0)), days: runDays.length });
+      }
+      runStart = l.date; runDays = [l];
+    } else if (isFlare && dayGap === 1) {
+      runDays.push(l);
+    } else {
+      if (runStart !== null && runDays.length >= 3) {
+        flares.push({ start: runStart, end: runDays[runDays.length-1].date, peak: Math.max(...runDays.map(d=>d.overallPain||0)), days: runDays.length });
+      }
+      runStart = null; runDays = [];
+    }
+  }
+  if (runStart !== null && runDays.length >= 3) {
+    flares.push({ start: runStart, end: runDays[runDays.length-1].date, peak: Math.max(...runDays.map(d=>d.overallPain||0)), days: runDays.length });
+  }
+
+  newPageIfNeeded(40);
+  doc.setFont("helvetica","bold").setFontSize(13).setTextColor(30,61,47);
+  doc.text("Flare Episodes", MARGIN, y);
+  y += 5;
+  doc.setFont("helvetica","normal").setFontSize(8).setTextColor(120,120,120);
+  doc.text("Periods of 3+ consecutive days with pain at level 3 or higher.", MARGIN, y);
+  y += 6;
+
+  if (flares.length === 0) {
+    doc.setFont("helvetica","italic").setFontSize(10).setTextColor(150,150,150);
+    doc.text("No flare episodes meeting the criteria in this period.", MARGIN, y);
+    y += 7;
+  } else {
+    flares.forEach(f => {
+      newPageIfNeeded(8);
+      doc.setFillColor(...PAIN_RGB[f.peak]).rect(MARGIN, y-3, 3, 5, "F");
+      doc.setFont("helvetica","normal").setFontSize(10).setTextColor(50,50,50);
+      doc.text(`${fmtDate(f.start)} – ${fmtDate(f.end)}`, MARGIN+5, y);
+      doc.setFont("helvetica","bold").setTextColor(...PAIN_RGB_FG[f.peak]);
+      doc.text(`${f.days} day${f.days===1?"":"s"} · peaked at ${f.peak}/5`, PAGE_W-MARGIN, y, { align:"right" });
+      y += 6;
+    });
+  }
+
+  // ─── PAGE 3: Daily entries reference table ──────────────────────────────────
+  doc.addPage();
+  y = MARGIN + 5;
+  addPageHeader();
+  doc.setFont("helvetica","bold").setFontSize(13).setTextColor(30,61,47);
+  doc.text("Daily Entries", MARGIN, y);
+  y += 7;
+
+  // Headers
+  doc.setFont("helvetica","bold").setFontSize(8).setTextColor(120,120,120);
+  doc.text("DATE",     MARGIN,        y);
+  doc.text("PAIN",     MARGIN+38,     y);
+  doc.text("MORN",     MARGIN+52,     y);
+  doc.text("FATG",     MARGIN+66,     y);
+  doc.text("SKIN",     MARGIN+80,     y);
+  doc.text("SLP",      MARGIN+94,     y);
+  doc.text("EX",       MARGIN+106,    y);
+  doc.text("ALC",      MARGIN+118,    y);
+  doc.text("NOTES",    MARGIN+132,    y);
+  y += 3;
+  doc.setDrawColor(220,210,200).line(MARGIN, y, PAGE_W-MARGIN, y);
+  y += 3.5;
+
+  doc.setFont("helvetica","normal").setFontSize(8);
+  logs.forEach(l => {
+    newPageIfNeeded(7);
+    const morningTxt = l.morning ? ["","F","S","V"][l.morning] : "—";
+    doc.setTextColor(50,50,50);
+    doc.text(fmtDateShort(l.date), MARGIN, y);
+    // Pain with colour pip
+    const p = l.overallPain || 0;
+    doc.setFillColor(...PAIN_RGB[p]).rect(MARGIN+38, y-2.5, 4, 3.5, "F");
+    doc.setTextColor(...PAIN_RGB_FG[p]);
+    doc.text(`${p}`, MARGIN+43.5, y);
+    doc.setTextColor(50,50,50);
+    doc.text(morningTxt,             MARGIN+52, y);
+    doc.text(`${l.fatigue||0}`,      MARGIN+66, y);
+    doc.text(`${l.skinFlare||0}`,    MARGIN+80, y);
+    doc.text(`${l.sleep||0}h`,       MARGIN+94, y);
+    doc.text(l.exercise && l.exercise!=="None" ? "✓" : "—", MARGIN+106, y);
+    doc.text(`${l.alcohol||0}`,      MARGIN+118, y);
+    if (l.notes) {
+      const noteLines = doc.splitTextToSize(l.notes, CONTENT_W - 132 + MARGIN);
+      doc.setTextColor(100,100,100);
+      doc.text(noteLines.slice(0,1)[0] + (noteLines.length>1?"…":""), MARGIN+132, y);
+    }
+    y += 5;
+  });
+
+  // Legend at bottom for the morning column shorthand
+  newPageIfNeeded(15);
+  y += 4;
+  doc.setDrawColor(236,229,220).line(MARGIN, y, PAGE_W-MARGIN, y);
+  y += 5;
+  doc.setFont("helvetica","italic").setFontSize(7).setTextColor(150,150,150);
+  doc.text("Morning soreness: F = Fine, S = Stiff, V = Very Sore. Pain/Fatigue/Skin scaled 0–5. EX = exercised that day. ALC = alcohol units.", MARGIN, y);
+  y += 4;
+  doc.text("Generated by PsA Journal · Patterns shown are statistical only and not a substitute for clinical interpretation.", MARGIN, y);
+
+  return doc;
+}
 
 function CalendarHeatmap({ logs, onEditEntry, onAddMissedDay }) {
   const today = new Date(todayStr()+"T12:00:00");
@@ -699,6 +1197,55 @@ function HistoryTab({ logs, onExport, onImport, onEditEntry, onDeleteEntry, onAd
 
 function InsightsTab({ logs, onEditEntry, onAddMissedDay }) {
   const n = logs.length;
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportStart, setReportStart] = useState("");
+  const [reportEnd, setReportEnd] = useState("");
+  const [patientName, setPatientName] = useState("");
+  const [generating, setGenerating] = useState(false);
+
+  // Initialise report defaults to last 3 months when dialog opens
+  const openReport = () => {
+    const today = new Date(todayStr()+"T12:00:00");
+    const threeMonthsAgo = new Date(today);
+    threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+    setReportEnd(today.toISOString().split("T")[0]);
+    setReportStart(threeMonthsAgo.toISOString().split("T")[0]);
+    setReportOpen(true);
+  };
+
+  const setPreset = (months) => {
+    const today = new Date(todayStr()+"T12:00:00");
+    const start = new Date(today);
+    start.setMonth(start.getMonth() - months);
+    setReportEnd(today.toISOString().split("T")[0]);
+    setReportStart(start.toISOString().split("T")[0]);
+  };
+
+  const handleGenerate = () => {
+    if (!reportStart || !reportEnd || reportStart > reportEnd) {
+      alert("Please pick a valid date range.");
+      return;
+    }
+    setGenerating(true);
+    // Run in next tick so the UI can show "Generating…"
+    setTimeout(() => {
+      try {
+        const doc = generateDoctorReport(logs, {
+          startDate: reportStart,
+          endDate: reportEnd,
+          patientName: patientName.trim(),
+        });
+        const fname = `psa-report-${reportStart}-to-${reportEnd}.pdf`;
+        doc.save(fname);
+        setReportOpen(false);
+      } catch (err) {
+        alert("Sorry — something went wrong generating the report. " + (err.message || ""));
+      } finally {
+        setGenerating(false);
+      }
+    }, 50);
+  };
+
   if (n < 5) return (
     <div style={{ padding:"40px 0" }}>
       <div style={{ textAlign:"center", marginBottom:24 }}>
@@ -851,6 +1398,92 @@ function InsightsTab({ logs, onEditEntry, onAddMissedDay }) {
 
   return (
     <div>
+      {/* Doctor Report button */}
+      <button onClick={openReport} style={{
+        width:"100%", padding:"14px 0", marginBottom:14,
+        background:"#fff", color:"#2C5F4A",
+        border:"2px solid #2C5F4A", borderRadius:13,
+        fontSize:14, fontFamily:"'Lora',serif", fontWeight:700, cursor:"pointer",
+        display:"flex", alignItems:"center", justifyContent:"center", gap:8,
+      }}>
+        <span style={{ fontSize:18 }}>📋</span>
+        <span>Generate Doctor Report (PDF)</span>
+      </button>
+
+      {/* Report dialog */}
+      {reportOpen && (
+        <div onClick={() => !generating && setReportOpen(false)} style={{
+          position:"fixed", inset:0, background:"rgba(30,61,47,.5)",
+          display:"flex", alignItems:"center", justifyContent:"center",
+          padding:16, zIndex:200,
+        }}>
+          <div onClick={e => e.stopPropagation()} style={{
+            background:"#fff", borderRadius:16, padding:"22px 22px 18px",
+            maxWidth:400, width:"100%", boxShadow:"0 10px 40px rgba(0,0,0,.25)",
+          }}>
+            <div style={{ fontFamily:"'Lora',serif", fontWeight:700, fontSize:18, color:"#1e3d2f", marginBottom:6 }}>
+              📋 Generate Doctor Report
+            </div>
+            <div style={{ fontSize:12, color:"#9a9189", marginBottom:18, lineHeight:1.5 }}>
+              Creates a multi-page PDF summary you can print or email to your rheumatologist.
+            </div>
+
+            <div style={{ marginBottom:14 }}>
+              <div style={{ fontSize:12, color:"#7a7069", marginBottom:6, fontWeight:600 }}>Period</div>
+              <div style={{ display:"flex", gap:6, marginBottom:10 }}>
+                {[1,3,6,12].map(m => (
+                  <button key={m} onClick={() => setPreset(m)} style={{
+                    flex:1, padding:"7px 0", borderRadius:8,
+                    border:"1.5px solid #E2D9CE", background:"#FAF7F2",
+                    color:"#7a7069", cursor:"pointer", fontSize:12, fontWeight:600,
+                  }}>{m === 12 ? "1y" : `${m}m`}</button>
+                ))}
+              </div>
+              <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                <input type="date" value={reportStart} max={reportEnd}
+                  onChange={e => setReportStart(e.target.value)}
+                  style={{ flex:1, padding:"8px 10px", borderRadius:8,
+                    border:"1.5px solid #E2D9CE", background:"#FAF7F2",
+                    fontSize:13, color:"#1e3d2f", fontFamily:"inherit", outline:"none" }}/>
+                <span style={{ fontSize:12, color:"#9a9189" }}>to</span>
+                <input type="date" value={reportEnd} max={todayStr()} min={reportStart}
+                  onChange={e => setReportEnd(e.target.value)}
+                  style={{ flex:1, padding:"8px 10px", borderRadius:8,
+                    border:"1.5px solid #E2D9CE", background:"#FAF7F2",
+                    fontSize:13, color:"#1e3d2f", fontFamily:"inherit", outline:"none" }}/>
+              </div>
+            </div>
+
+            <div style={{ marginBottom:18 }}>
+              <div style={{ fontSize:12, color:"#7a7069", marginBottom:6, fontWeight:600 }}>
+                Patient name <span style={{ color:"#9a9189", fontWeight:400 }}>(optional)</span>
+              </div>
+              <input type="text" value={patientName}
+                onChange={e => setPatientName(e.target.value)}
+                placeholder="Leave blank to omit"
+                style={{ width:"100%", padding:"8px 10px", borderRadius:8,
+                  border:"1.5px solid #E2D9CE", background:"#FAF7F2",
+                  fontSize:13, color:"#1e3d2f", fontFamily:"inherit", outline:"none" }}/>
+            </div>
+
+            <div style={{ display:"flex", gap:10 }}>
+              <button onClick={() => setReportOpen(false)} disabled={generating} style={{
+                flex:1, padding:"11px 0", borderRadius:10,
+                border:"1.5px solid #E2D9CE", background:"#fff",
+                color:"#7a7069", cursor: generating ? "not-allowed" : "pointer",
+                fontSize:13, fontWeight:600, opacity: generating ? .5 : 1,
+              }}>Cancel</button>
+              <button onClick={handleGenerate} disabled={generating} style={{
+                flex:2, padding:"11px 0", borderRadius:10, border:"none",
+                background: generating ? "#9aa39c" : "#2C5F4A",
+                color:"#fff", cursor: generating ? "wait" : "pointer",
+                fontSize:13, fontWeight:700, fontFamily:"'Lora',serif",
+              }}>{generating ? "Generating PDF…" : "Download PDF"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <Card title="Pain Trend" emoji="📈">
         <div style={{ fontSize:12, color:"#9a9189", marginBottom:10 }}>Last {trend.length} days logged</div>
         <SimpleLineChart data={trend}/>
