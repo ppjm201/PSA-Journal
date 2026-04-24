@@ -707,7 +707,7 @@ function generateDoctorReport(allLogs, { startDate, endDate, patientName }) {
 
   // Sentence 5: comorbid skin
   if (avgSkin >= 1.5) {
-    summaryLines.push(`Notable skin involvement was present (average severity ${avgSkin.toFixed(1)}/5).`);
+    summaryLines.push(`Psoriasis was active throughout this period, averaging ${avgSkin.toFixed(1)}/5 in severity.`);
   }
 
   // Sentence 6: fatigue
@@ -920,15 +920,17 @@ function generateDoctorReport(allLogs, { startDate, endDate, patientName }) {
   y = MARGIN + 5;
   addPageHeader();
 
-  // Pain trend line chart
+  // Pain trend line chart with trend overlay
   doc.setFont("helvetica","bold").setFontSize(13).setTextColor(30,61,47);
   doc.text("Pain Trend Over Time", MARGIN, y);
   y += 8;
 
-  const chartH = 50;
+  const chartH = 55;
   const chartX = MARGIN, chartY = y, chartW = CONTENT_W;
+
   // Background
   doc.setFillColor(252,250,247).rect(chartX, chartY, chartW, chartH, "F");
+
   // Grid lines
   doc.setDrawColor(240,232,224).setLineWidth(0.2);
   for (let v=0; v<=5; v++) {
@@ -937,10 +939,42 @@ function generateDoctorReport(allLogs, { startDate, endDate, patientName }) {
     doc.setFont("helvetica","normal").setFontSize(7).setTextColor(150,150,150);
     doc.text(`${v}`, chartX-3, gy+1, { align:"right" });
   }
-  // Plot line
+
   if (logs.length > 1) {
     const xStep = chartW / (logs.length-1);
-    doc.setDrawColor(44,95,74).setLineWidth(0.6);
+
+    // ─── Linear regression for trend line ───────────────────────────────────
+    // y = a + b*x  using least squares on (index, pain) pairs
+    const xs = logs.map((_,i) => i);
+    const ys = logs.map(l => l.overallPain || 0);
+    const meanX = xs.reduce((s,x)=>s+x,0) / xs.length;
+    const meanY = ys.reduce((s,y)=>s+y,0) / ys.length;
+    let num = 0, den = 0;
+    for (let i=0; i<xs.length; i++) {
+      num += (xs[i]-meanX) * (ys[i]-meanY);
+      den += (xs[i]-meanX) ** 2;
+    }
+    const slope = den === 0 ? 0 : num/den;
+    const intercept = meanY - slope * meanX;
+    const trendStart = intercept;                          // pain at x=0
+    const trendEnd   = intercept + slope * (logs.length-1); // pain at x=last
+
+    // Trend direction
+    const totalChange = trendEnd - trendStart;
+    let trendColor, trendLabel;
+    if (Math.abs(totalChange) < 0.3) {
+      trendColor = [122,112,105];
+      trendLabel = `Trend: stable (${totalChange>0?"+":""}${totalChange.toFixed(1)} over period)`;
+    } else if (totalChange < 0) {
+      trendColor = [44,95,74];
+      trendLabel = `Trend: improving (down ${Math.abs(totalChange).toFixed(1)} points over period)`;
+    } else {
+      trendColor = [198,40,40];
+      trendLabel = `Trend: worsening (up ${totalChange.toFixed(1)} points over period)`;
+    }
+
+    // Plot daily line (lighter so trend stands out)
+    doc.setDrawColor(122,142,132).setLineWidth(0.4);
     for (let i=1; i<logs.length; i++) {
       const x1 = chartX + (i-1)*xStep, y1 = chartY + chartH - (logs[i-1].overallPain/5)*chartH;
       const x2 = chartX + i*xStep,     y2 = chartY + chartH - (logs[i].overallPain/5)*chartH;
@@ -949,18 +983,42 @@ function generateDoctorReport(allLogs, { startDate, endDate, patientName }) {
     // Dots
     logs.forEach((l,i) => {
       const cx = chartX + i*xStep, cy = chartY + chartH - (l.overallPain/5)*chartH;
-      doc.setFillColor(44,95,74).circle(cx, cy, 0.7, "F");
+      doc.setFillColor(122,142,132).circle(cx, cy, 0.6, "F");
     });
+
+    // Trend line (bold, coloured by direction)
+    const trendY1 = chartY + chartH - (Math.max(0,Math.min(5,trendStart))/5)*chartH;
+    const trendY2 = chartY + chartH - (Math.max(0,Math.min(5,trendEnd))/5)*chartH;
+    doc.setDrawColor(...trendColor).setLineWidth(1.0);
+    doc.setLineDashPattern([2.5, 1.5], 0);
+    doc.line(chartX, trendY1, chartX+chartW, trendY2);
+    doc.setLineDashPattern([], 0);  // reset dash
+
+    // Start/end markers on trend line
+    doc.setFillColor(...trendColor);
+    doc.circle(chartX, trendY1, 1.5, "F");
+    doc.circle(chartX+chartW, trendY2, 1.5, "F");
+
     // X-axis labels (first, middle, last)
-    doc.setFontSize(7).setTextColor(150,150,150);
+    doc.setFont("helvetica","normal").setFontSize(7).setTextColor(150,150,150);
     doc.text(fmtDateShort(logs[0].date), chartX, chartY+chartH+5);
     if (logs.length > 2) {
       const mid = Math.floor(logs.length/2);
       doc.text(fmtDateShort(logs[mid].date), chartX + mid*xStep, chartY+chartH+5, { align:"center" });
     }
     doc.text(fmtDateShort(logs[logs.length-1].date), chartX+chartW, chartY+chartH+5, { align:"right" });
+
+    // Trend annotation underneath the chart
+    y = chartY + chartH + 10;
+    doc.setFont("helvetica","bold").setFontSize(9).setTextColor(...trendColor);
+    doc.text(trendLabel, MARGIN, y);
+    y += 4;
+    doc.setFont("helvetica","italic").setFontSize(7).setTextColor(150,150,150);
+    doc.text("Light line = daily pain. Bold dashed line = overall trend (linear regression).", MARGIN, y);
+    y += 8;
+  } else {
+    y += chartH + 10;
   }
-  y += chartH + 10;
 
   // ─── Calendar heatmap (one mini-calendar per month) ─────────────────────────
   newPageIfNeeded(50);
