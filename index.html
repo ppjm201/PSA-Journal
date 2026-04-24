@@ -1,5 +1,4 @@
 <!DOCTYPE html>
-
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -13,9 +12,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lora:wght@400;600;700;800&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600&display=swap">
 
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-
 <script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
 
 <style>
@@ -27,7 +24,6 @@
   #root { min-height:100vh; }
   .loader { display:flex; align-items:center; justify-content:center; height:100vh; font-family:'Lora',serif; color:#2C5F4A; font-size:18px; }
 </style>
-
 </head>
 <body>
 <div id="root"><div class="loader">Loading your journal…</div></div>
@@ -211,8 +207,10 @@ function SimpleLineChart({ data }) {
 
 // ─── Log Tab ─────────────────────────────────────────────────────────────────
 
-function LogTab({ log, setLog, onSave, saveMsg }) {
+function LogTab({ log, setLog, onSave, saveMsg, onResetToToday }) {
   const [openJoint, setOpenJoint] = useState(null);
+  const isPast = log.date !== todayStr();
+  const editDateLabel = new Date(log.date+"T12:00:00").toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"long"});
 
   const toggle = (field, id) => setLog(p => {
     const arr = p[field] || [];
@@ -221,6 +219,24 @@ function LogTab({ log, setLog, onSave, saveMsg }) {
 
   return (
     <div>
+      {isPast && (
+        <div style={{ background:"#FFF3E0", border:"1.5px solid #FFB74D", borderRadius:12,
+          padding:"12px 14px", marginBottom:14, display:"flex", alignItems:"center",
+          justifyContent:"space-between", gap:10 }}>
+          <div>
+            <div style={{ fontFamily:"'Lora',serif", fontWeight:700, fontSize:14, color:"#E65100" }}>
+              ✏️ Editing past entry
+            </div>
+            <div style={{ fontSize:12, color:"#7a7069", marginTop:2 }}>{editDateLabel}</div>
+          </div>
+          <button onClick={onResetToToday} style={{
+            padding:"7px 12px", borderRadius:8, border:"1.5px solid #E65100",
+            background:"#fff", color:"#E65100", cursor:"pointer",
+            fontSize:12, fontWeight:600, whiteSpace:"nowrap",
+          }}>← Today</button>
+        </div>
+      )}
+
       <Card title="Overall Pain Today" emoji="🌡️">
         <div style={{ textAlign:"center", marginBottom:18 }}>
           <div style={{ fontSize:52, fontWeight:800, fontFamily:"'Lora',serif",
@@ -402,7 +418,7 @@ function LogTab({ log, setLog, onSave, saveMsg }) {
           color:"#fff", border:"none", borderRadius:13, fontSize:16,
           fontFamily:"'Lora',serif", fontWeight:700, cursor:"pointer",
           letterSpacing:.5, boxShadow:"0 4px 16px rgba(44,95,74,.35)", transition:"background .3s",
-        }}>{saveMsg || "Save Today's Entry"}</button>
+        }}>{saveMsg || (isPast ? "Update Entry" : "Save Today's Entry")}</button>
       </div>
     </div>
   );
@@ -410,7 +426,7 @@ function LogTab({ log, setLog, onSave, saveMsg }) {
 
 // ─── History Tab ──────────────────────────────────────────────────────────────
 
-function HistoryTab({ logs, onExport, onImport }) {
+function HistoryTab({ logs, onExport, onImport, onEditEntry, onDeleteEntry }) {
   const fileRef = useRef(null);
 
   if (!logs.length) return (
@@ -434,41 +450,63 @@ function HistoryTab({ logs, onExport, onImport }) {
           onChange={e=>{ const f=e.target.files?.[0]; if(f) onImport(f); e.target.value=""; }}/>
       </div>
 
+      <div style={{ fontSize:12, color:"#9a9189", marginBottom:10, paddingLeft:4, fontStyle:"italic" }}>
+        Tap any entry to edit it
+      </div>
+
       {[...logs].reverse().map(entry => {
         const affected = Object.entries(entry.joints||{}).filter(([,v])=>v>0);
         const d = new Date(entry.date+"T12:00:00");
         return (
-          <Card key={entry.date} style={{ marginBottom:12 }}>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:10 }}>
-              <div>
-                <div style={{ fontFamily:"'Lora',serif", fontWeight:700, fontSize:16, color:"#1e3d2f" }}>
-                  {d.toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"short"})}
+          <Card key={entry.date} style={{ marginBottom:12, padding:0, overflow:"hidden" }}>
+            <button
+              onClick={() => onEditEntry(entry.date)}
+              style={{ width:"100%", background:"none", border:"none", padding:"18px 20px",
+                cursor:"pointer", textAlign:"left", display:"block" }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:10 }}>
+                <div>
+                  <div style={{ fontFamily:"'Lora',serif", fontWeight:700, fontSize:16, color:"#1e3d2f" }}>
+                    {d.toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"short"})}
+                  </div>
+                  {entry.notes && <div style={{ fontSize:12, color:"#9a9189", marginTop:3, fontStyle:"italic" }}>
+                    "{entry.notes.slice(0,70)}{entry.notes.length>70?"…":""}"
+                  </div>}
                 </div>
-                {entry.notes && <div style={{ fontSize:12, color:"#9a9189", marginTop:3, fontStyle:"italic" }}>
-                  "{entry.notes.slice(0,70)}{entry.notes.length>70?"…":""}"
-                </div>}
+                <div style={{ textAlign:"center", background:pb(entry.overallPain), borderRadius:10,
+                  padding:"5px 12px", minWidth:52, border:`1.5px solid ${pf(entry.overallPain)}30` }}>
+                  <div style={{ fontSize:22, fontWeight:800, fontFamily:"'Lora',serif",
+                    color:pf(entry.overallPain), lineHeight:1 }}>{entry.overallPain}</div>
+                  <div style={{ fontSize:10, color:"#9a9189", marginTop:2 }}>/ 5</div>
+                </div>
               </div>
-              <div style={{ textAlign:"center", background:pb(entry.overallPain), borderRadius:10,
-                padding:"5px 12px", minWidth:52, border:`1.5px solid ${pf(entry.overallPain)}30` }}>
-                <div style={{ fontSize:22, fontWeight:800, fontFamily:"'Lora',serif",
-                  color:pf(entry.overallPain), lineHeight:1 }}>{entry.overallPain}</div>
-                <div style={{ fontSize:10, color:"#9a9189", marginTop:2 }}>/ 5</div>
+              <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+                {entry.morning>0 && <span style={{ fontSize:11, background:MORNING_BG[entry.morning], color:MORNING_FG[entry.morning], borderRadius:20, padding:"2px 9px" }}>🌅 {MORNING_LBLS[entry.morning]} morning</span>}
+                {entry.fatigue>0 && <span style={{ fontSize:11, background:pb(entry.fatigue), color:pf(entry.fatigue), borderRadius:20, padding:"2px 9px" }}>🪫 Fatigue {entry.fatigue}/5</span>}
+                {entry.skinFlare>0 && <span style={{ fontSize:11, background:pb(entry.skinFlare), color:pf(entry.skinFlare), borderRadius:20, padding:"2px 9px" }}>✨ Skin {entry.skinFlare}/5</span>}
+                {affected.slice(0,5).map(([jid,pain])=>{
+                  const j=JOINTS.find(x=>x.id===jid);
+                  return <span key={jid} style={{ fontSize:11, background:pb(pain), color:pf(pain),
+                    borderRadius:20, padding:"2px 9px", border:`1px solid ${pf(pain)}30` }}>{j?.label||jid}</span>;
+                })}
+                {affected.length>5 && <span style={{ fontSize:11, color:"#9a9189" }}>+{affected.length-5} more</span>}
+                {(entry.foods||[]).map(fid=>{ const f=ALL_FOODS.find(x=>x.id===fid);
+                  return f?<span key={fid} style={{ fontSize:11, background:"#F5F0EB", color:"#7a7069", borderRadius:20, padding:"2px 9px" }}>{f.emoji} {f.label}</span>:null; })}
+                {entry.exercise&&entry.exercise!=="None"&&<span style={{ fontSize:11, background:"#E8F5E9", color:"#2C5F4A", borderRadius:20, padding:"2px 9px" }}>🏃 {entry.exercise}{entry.exerciseMins?` ${entry.exerciseMins}m`:""}</span>}
+                {(entry.alcohol||0)>0&&<span style={{ fontSize:11, background:"#FFF3E0", color:"#E65100", borderRadius:20, padding:"2px 9px" }}>🍷 {entry.alcohol} unit{entry.alcohol!==1?"s":""}</span>}
               </div>
-            </div>
-            <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
-              {entry.morning>0 && <span style={{ fontSize:11, background:MORNING_BG[entry.morning], color:MORNING_FG[entry.morning], borderRadius:20, padding:"2px 9px" }}>🌅 {MORNING_LBLS[entry.morning]} morning</span>}
-              {entry.fatigue>0 && <span style={{ fontSize:11, background:pb(entry.fatigue), color:pf(entry.fatigue), borderRadius:20, padding:"2px 9px" }}>🪫 Fatigue {entry.fatigue}/5</span>}
-              {entry.skinFlare>0 && <span style={{ fontSize:11, background:pb(entry.skinFlare), color:pf(entry.skinFlare), borderRadius:20, padding:"2px 9px" }}>✨ Skin {entry.skinFlare}/5</span>}
-              {affected.slice(0,5).map(([jid,pain])=>{
-                const j=JOINTS.find(x=>x.id===jid);
-                return <span key={jid} style={{ fontSize:11, background:pb(pain), color:pf(pain),
-                  borderRadius:20, padding:"2px 9px", border:`1px solid ${pf(pain)}30` }}>{j?.label||jid}</span>;
-              })}
-              {affected.length>5 && <span style={{ fontSize:11, color:"#9a9189" }}>+{affected.length-5} more</span>}
-              {(entry.foods||[]).map(fid=>{ const f=ALL_FOODS.find(x=>x.id===fid);
-                return f?<span key={fid} style={{ fontSize:11, background:"#F5F0EB", color:"#7a7069", borderRadius:20, padding:"2px 9px" }}>{f.emoji} {f.label}</span>:null; })}
-              {entry.exercise&&entry.exercise!=="None"&&<span style={{ fontSize:11, background:"#E8F5E9", color:"#2C5F4A", borderRadius:20, padding:"2px 9px" }}>🏃 {entry.exercise}{entry.exerciseMins?` ${entry.exerciseMins}m`:""}</span>}
-              {(entry.alcohol||0)>0&&<span style={{ fontSize:11, background:"#FFF3E0", color:"#E65100", borderRadius:20, padding:"2px 9px" }}>🍷 {entry.alcohol} unit{entry.alcohol!==1?"s":""}</span>}
+            </button>
+            <div style={{ display:"flex", borderTop:"1px solid #ECE5DC" }}>
+              <button onClick={() => onEditEntry(entry.date)}
+                style={{ flex:1, padding:"10px 0", border:"none", background:"#FAF7F2",
+                  color:"#2C5F4A", cursor:"pointer", fontSize:12, fontWeight:600 }}>
+                ✏️ Edit
+              </button>
+              <div style={{ width:1, background:"#ECE5DC" }}/>
+              <button onClick={() => onDeleteEntry(entry.date)}
+                style={{ flex:1, padding:"10px 0", border:"none", background:"#FAF7F2",
+                  color:"#B71C1C", cursor:"pointer", fontSize:12, fontWeight:600 }}>
+                🗑️ Delete
+              </button>
             </div>
           </Card>
         );
@@ -712,13 +750,36 @@ function PsATracker() {
   }, []);
 
   const onSave = () => {
-    const entry   = { ...log, date: todayStr() };
-    const updated = [...logs.filter(l => l.date !== todayStr()), entry]
+    const entry   = { ...log };   // log.date may be today or a past date being edited
+    const updated = [...logs.filter(l => l.date !== entry.date), entry]
                       .sort((a,b) => a.date.localeCompare(b.date));
     writeLogs(updated);
     setLogs(updated);
     setSaveMsg("Saved ✓");
     setTimeout(() => setSaveMsg(""), 2500);
+  };
+
+  const onEditEntry = (date) => {
+    const entry = logs.find(l => l.date === date);
+    if (!entry) return;
+    // Merge with emptyLog to ensure new fields exist on old entries
+    setLog({ ...emptyLog(), ...entry });
+    setTab("log");
+    window.scrollTo({ top:0, behavior:"smooth" });
+  };
+
+  const onDeleteEntry = (date) => {
+    if (!confirm(`Delete the entry for ${new Date(date+"T12:00:00").toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"long"})}? This can't be undone.`)) return;
+    const updated = logs.filter(l => l.date !== date);
+    writeLogs(updated);
+    setLogs(updated);
+    // If we were editing the deleted entry, reset the form
+    if (log.date === date) setLog(emptyLog());
+  };
+
+  const onResetToToday = () => {
+    const todayEntry = logs.find(l => l.date === todayStr());
+    setLog(todayEntry ? { ...emptyLog(), ...todayEntry } : emptyLog());
   };
 
   const onExport = () => {
@@ -780,8 +841,8 @@ function PsATracker() {
       </nav>
 
       <main style={{ padding:"16px 16px 0" }}>
-        {tab==="log"      && <LogTab      log={log} setLog={setLog} onSave={onSave} saveMsg={saveMsg}/>}
-        {tab==="history"  && <HistoryTab  logs={logs} onExport={onExport} onImport={onImport}/>}
+        {tab==="log"      && <LogTab      log={log} setLog={setLog} onSave={onSave} saveMsg={saveMsg} onResetToToday={onResetToToday}/>}
+        {tab==="history"  && <HistoryTab  logs={logs} onExport={onExport} onImport={onImport} onEditEntry={onEditEntry} onDeleteEntry={onDeleteEntry}/>}
         {tab==="insights" && <InsightsTab logs={logs}/>}
       </main>
     </div>
@@ -790,6 +851,5 @@ function PsATracker() {
 
 ReactDOM.createRoot(document.getElementById('root')).render(<PsATracker />);
 </script>
-
 </body>
 </html>
