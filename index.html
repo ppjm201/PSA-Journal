@@ -1,5 +1,4 @@
 <!DOCTYPE html>
-
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -13,11 +12,8 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lora:wght@400;600;700;800&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600&display=swap">
 
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-
 <script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
-
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 
 <style>
@@ -29,7 +25,6 @@
   #root { min-height:100vh; }
   .loader { display:flex; align-items:center; justify-content:center; height:100vh; font-family:'Lora',serif; color:#2C5F4A; font-size:18px; }
 </style>
-
 </head>
 <body>
 <div id="root"><div class="loader">Loading your journal…</div></div>
@@ -75,7 +70,37 @@ const POSITIVES = [
 ];
 
 const ALL_FOODS = [...TRIGGERS, ...POSITIVES];
-const EXERCISE_OPTS = ["None","Walking","Yoga / Stretching","Swimming","Cycling","Strength Training","Running","Other"];
+const EXERCISE_OPTS = ["Walking","Yoga / Stretching","Swimming","Cycling","Strength Training","Running","Other"];
+
+// Returns array of exercises for an entry, handling both old (string) and new (array) schemas
+const getExercises = (entry) => {
+  if (Array.isArray(entry.exercises)) return entry.exercises;
+  if (entry.exercise && entry.exercise !== "None") return [entry.exercise];
+  return [];
+};
+
+// Returns minutes-by-exercise-type, handling all schema versions:
+//   v1: { exercise: "Walking", exerciseMins: 30 }                  → { Walking: 30 }
+//   v2: { exercises: ["Walking","Yoga"], exerciseMins: 45 }        → split evenly across types
+//   v3: { exercises: [...], exerciseMinsByType: { Walking: 30 } }  → use as-is
+const getExerciseMinsByType = (entry) => {
+  if (entry.exerciseMinsByType && typeof entry.exerciseMinsByType === "object") {
+    return entry.exerciseMinsByType;
+  }
+  const list = getExercises(entry);
+  const total = entry.exerciseMins || 0;
+  if (list.length === 0 || total === 0) return {};
+  // Split total evenly across types (best guess for migrated data)
+  const per = Math.round(total / list.length);
+  const out = {};
+  list.forEach(t => { out[t] = per; });
+  return out;
+};
+
+const getTotalExerciseMins = (entry) => {
+  const map = getExerciseMinsByType(entry);
+  return Object.values(map).reduce((s,v) => s+v, 0);
+};
 const WEATHER_OPTS  = ["☀️ Sunny","⛅ Cloudy","🌧️ Rainy","🌬️ Windy","❄️ Cold","💧 Humid","🌡️ Hot"];
 
 const MORNING_LBLS = ["–","Fine","Stiff","Very Sore"];
@@ -93,7 +118,7 @@ const todayStr = () => new Date().toISOString().split("T")[0];
 
 const emptyLog = () => ({
   date:todayStr(), overallPain:0, joints:{}, swelling:{},
-  foods:[], exercise:"None", exerciseMins:0,
+  foods:[], exercises:[], exerciseMinsByType:{},
   alcohol:0, stress:0, sleep:7, weather:[], notes:"",
   skinFlare:0,
   fatigue:0,
@@ -284,8 +309,8 @@ function generateDemoData() {
       joints,
       swelling,
       foods: e.foods,
-      exercise: e.exercise,
-      exerciseMins: e.exerciseMins,
+      exercises: e._exercise ? [e.exercise] : [],
+      exerciseMinsByType: e._exercise ? { [e.exercise]: e.exerciseMins } : {},
       alcohol: e.alcohol,
       stress,
       sleep: e.sleep,
@@ -868,9 +893,9 @@ function generateDoctorReport(allLogs, { startDate, endDate, patientName }) {
 
   const patterns = [];
 
-  // Exercise effect
-  const exDays   = logs.filter(l=>l.exercise && l.exercise!=="None");
-  const noExDays = logs.filter(l=>!l.exercise || l.exercise==="None");
+  // Exercise effect — handle all schema versions
+  const exDays   = logs.filter(l => getExercises(l).length > 0);
+  const noExDays = logs.filter(l => getExercises(l).length === 0);
   if (exDays.length>=3 && noExDays.length>=3) {
     const ex = avg(exDays.map(l=>l.overallPain));
     const nx = avg(noExDays.map(l=>l.overallPain));
@@ -1193,7 +1218,7 @@ function generateDoctorReport(allLogs, { startDate, endDate, patientName }) {
     doc.text(`${l.fatigue||0}`,      MARGIN+66, y);
     doc.text(`${l.skinFlare||0}`,    MARGIN+80, y);
     doc.text(`${l.sleep||0}h`,       MARGIN+94, y);
-    doc.text(l.exercise && l.exercise!=="None" ? "Y" : "-", MARGIN+106, y);
+    doc.text(getExercises(l).length > 0 ? "Y" : "-", MARGIN+106, y);
     doc.text(`${l.alcohol||0}`,      MARGIN+118, y);
     if (l.notes) {
       const noteLines = doc.splitTextToSize(l.notes, CONTENT_W - 132 + MARGIN);
@@ -1504,13 +1529,51 @@ function LogTab({ log, setLog, onSave, saveMsg, onResetToToday, logs }) {
       </Card>
 
       <Card title="Exercise" emoji="🏃">
+        <p style={{ fontSize:13, color:"#9a9189", margin:"0 0 8px" }}>
+          Tap any that apply today
+        </p>
         <div style={{ display:"flex", flexWrap:"wrap", gap:8, marginBottom:14 }}>
-          {EXERCISE_OPTS.map(e => <Chip key={e} label={e} active={log.exercise===e} onClick={()=>setLog(p=>({...p,exercise:e}))} color="#2C5F4A"/>)}
+          {EXERCISE_OPTS.map(e => {
+            const active = (log.exercises || []).includes(e);
+            return <Chip key={e} label={e} active={active}
+              onClick={() => {
+                setLog(p => {
+                  const list = p.exercises || [];
+                  const isOn = list.includes(e);
+                  const newList = isOn ? list.filter(x => x !== e) : [...list, e];
+                  const newMins = { ...(p.exerciseMinsByType || {}) };
+                  if (isOn) {
+                    delete newMins[e];   // remove duration when deselected
+                  } else if (newMins[e] === undefined) {
+                    newMins[e] = 30;     // sensible default duration
+                  }
+                  return { ...p, exercises: newList, exerciseMinsByType: newMins };
+                });
+              }}
+              color="#2C5F4A"/>;
+          })}
         </div>
-        {log.exercise!=="None" && (
-          <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-            <span style={{ fontSize:13, color:"#7a7069" }}>Duration:</span>
-            <Stepper value={log.exerciseMins} onChange={v=>setLog(p=>({...p,exerciseMins:v}))} min={0} step={15} suffix="m"/>
+        {(log.exercises || []).length > 0 && (
+          <div style={{ display:"flex", flexDirection:"column", gap:10,
+            background:"#FAF7F2", borderRadius:10, padding:"12px 14px" }}>
+            <div style={{ fontSize:12, color:"#9a9189", marginBottom:2 }}>Duration for each:</div>
+            {(log.exercises || []).map(ex => (
+              <div key={ex} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:10 }}>
+                <span style={{ fontSize:13, color:"#1e3d2f", fontWeight:500, flex:1 }}>{ex}</span>
+                <Stepper
+                  value={(log.exerciseMinsByType || {})[ex] || 0}
+                  onChange={v => setLog(p => ({
+                    ...p, exerciseMinsByType: { ...(p.exerciseMinsByType || {}), [ex]: v }
+                  }))}
+                  min={0} step={15} suffix="m"/>
+              </div>
+            ))}
+            {(log.exercises || []).length > 1 && (
+              <div style={{ fontSize:11, color:"#9a9189", textAlign:"right",
+                paddingTop:6, marginTop:4, borderTop:"1px solid #ECE5DC", fontStyle:"italic" }}>
+                Total: {Object.values(log.exerciseMinsByType || {}).reduce((s,v)=>s+v,0)}m
+              </div>
+            )}
           </div>
         )}
       </Card>
@@ -1681,7 +1744,14 @@ function HistoryTab({ logs, onExport, onImport, onEditEntry, onDeleteEntry, onAd
                 {affected.length>5 && <span style={{ fontSize:11, color:"#9a9189" }}>+{affected.length-5} more</span>}
                 {(entry.foods||[]).map(fid=>{ const f=ALL_FOODS.find(x=>x.id===fid);
                   return f?<span key={fid} style={{ fontSize:11, background:"#F5F0EB", color:"#7a7069", borderRadius:20, padding:"2px 9px" }}>{f.emoji} {f.label}</span>:null; })}
-                {entry.exercise&&entry.exercise!=="None"&&<span style={{ fontSize:11, background:"#E8F5E9", color:"#2C5F4A", borderRadius:20, padding:"2px 9px" }}>🏃 {entry.exercise}{entry.exerciseMins?` ${entry.exerciseMins}m`:""}</span>}
+                {getExercises(entry).map(ex => {
+                  const mins = getExerciseMinsByType(entry)[ex];
+                  return (
+                    <span key={ex} style={{ fontSize:11, background:"#E8F5E9", color:"#2C5F4A", borderRadius:20, padding:"2px 9px" }}>
+                      🏃 {ex}{mins ? ` ${mins}m` : ""}
+                    </span>
+                  );
+                })}
                 {(entry.alcohol||0)>0&&<span style={{ fontSize:11, background:"#FFF3E0", color:"#E65100", borderRadius:20, padding:"2px 9px" }}>🍷 {entry.alcohol} unit{entry.alcohol!==1?"s":""}</span>}
               </div>
             </button>
@@ -1906,8 +1976,26 @@ function InsightsTab({ logs, onEditEntry, onAddMissedDay }) {
     return best ? { ...food, ...best } : null;
   }).filter(Boolean).sort((a,b) => Math.abs(b.diff) - Math.abs(a.diff));
 
-  const exDays   = logs.filter(l=>l.exercise&&l.exercise!=="None");
-  const noExDays = logs.filter(l=>!l.exercise||l.exercise==="None");
+  const exDays   = logs.filter(l => getExercises(l).length > 0);
+  const noExDays = logs.filter(l => getExercises(l).length === 0);
+
+  // Per-exercise-type analysis: does *this specific* exercise show distinct impact?
+  // For each type with >=3 days of data, compare pain on days when she did THAT type
+  // vs days when she didn't (rest OR did a different type). Only surface if the
+  // effect differs meaningfully from the overall exercise-day effect.
+  const allExerciseTypes = new Set();
+  logs.forEach(l => getExercises(l).forEach(t => allExerciseTypes.add(t)));
+  const perTypeInsights = Array.from(allExerciseTypes).map(type => {
+    const did    = logs.filter(l => getExercises(l).includes(type));
+    const didnt  = logs.filter(l => !getExercises(l).includes(type));
+    if (did.length < 3 || didnt.length < 3) return null;
+    const a = avge(did.map(l=>l.overallPain));
+    const b = avge(didnt.map(l=>l.overallPain));
+    const diff = +(a-b).toFixed(1);
+    return { type, did:did.length, avgWith:+a.toFixed(1), avgWithout:+b.toFixed(1), diff };
+  }).filter(Boolean)
+    .filter(r => Math.abs(r.diff) >= 0.3)         // only meaningful effects
+    .sort((a,b) => Math.abs(b.diff) - Math.abs(a.diff));
   const exAvg    = avge(exDays.map(l=>l.overallPain));
   const noExAvg  = avge(noExDays.map(l=>l.overallPain));
 
@@ -2251,6 +2339,33 @@ function InsightsTab({ logs, onEditEntry, onAddMissedDay }) {
               : exAvg>noExAvg ? `⚠️ Pain is slightly higher on exercise days — could be post-activity soreness. Worth mentioning to your rheumatologist.`
               : `➡️ No significant difference yet between exercise and rest days.`}
           </div>
+
+          {perTypeInsights.length > 0 && (
+            <>
+              <div style={{ marginTop:16, marginBottom:8, fontSize:12, color:"#7a7069", fontWeight:600 }}>
+                By exercise type
+              </div>
+              <p style={{ fontSize:11, color:"#9a9189", margin:"0 0 10px", lineHeight:1.5 }}>
+                Notable differences between specific exercises and your overall pain. Only types with at least 3 days of data are shown.
+              </p>
+              {perTypeInsights.map(r => (
+                <div key={r.type} style={{ display:"flex", alignItems:"center", gap:10, marginBottom:8 }}>
+                  <span style={{ fontSize:12, flex:1, color:"#1e3d2f", fontWeight:500 }}>{r.type}</span>
+                  <span style={{ fontSize:11, color:"#9a9189" }}>{r.did} day{r.did===1?"":"s"}</span>
+                  <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                    <div style={{ width:60, height:6, background:"#F0E8E0", borderRadius:3, overflow:"hidden" }}>
+                      <div style={{ width:`${Math.min(100,Math.abs(r.diff)/2*100)}%`, height:"100%",
+                        background: r.diff>0 ? "#EF5350" : "#4CAF50", borderRadius:3 }}/>
+                    </div>
+                    <span style={{ fontSize:13, fontWeight:700, minWidth:36, textAlign:"right",
+                      color: r.diff>0.2 ? "#C62828" : r.diff<-0.2 ? "#2C5F4A" : "#9a9189" }}>
+                      {r.diff>0?"+":""}{r.diff}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
         </Card>
       )}
 
@@ -2333,7 +2448,14 @@ function PsATracker() {
     if (stored.length) {
       setLogs(stored);
       const todayEntry = stored.find(l => l.date === todayStr());
-      if (todayEntry) setLog(todayEntry);
+      if (todayEntry) {
+        const merged = { ...emptyLog(), ...todayEntry };
+        if (!Array.isArray(merged.exercises)) merged.exercises = getExercises(todayEntry);
+        merged.exerciseMinsByType = getExerciseMinsByType(todayEntry);
+        delete merged.exercise;
+        delete merged.exerciseMins;
+        setLog(merged);
+      }
     }
   }, []);
 
@@ -2350,8 +2472,14 @@ function PsATracker() {
   const onEditEntry = (date) => {
     const entry = logs.find(l => l.date === date);
     if (!entry) return;
-    // Merge with emptyLog to ensure new fields exist on old entries
-    setLog({ ...emptyLog(), ...entry });
+    // Merge with emptyLog to ensure new fields exist on old entries.
+    // Migrate legacy schemas to current.
+    const merged = { ...emptyLog(), ...entry };
+    if (!Array.isArray(merged.exercises)) merged.exercises = getExercises(entry);
+    merged.exerciseMinsByType = getExerciseMinsByType(entry);
+    delete merged.exercise;     // legacy v1 field
+    delete merged.exerciseMins; // legacy v1/v2 field
+    setLog(merged);
     setTab("log");
     window.scrollTo({ top:0, behavior:"smooth" });
   };
@@ -2428,7 +2556,14 @@ function PsATracker() {
         writeLogs(merged);
         setLogs(merged);
         const todayEntry = merged.find(l => l.date === todayStr());
-        if (todayEntry) setLog(todayEntry);
+        if (todayEntry) {
+          const tMerged = { ...emptyLog(), ...todayEntry };
+          if (!Array.isArray(tMerged.exercises)) tMerged.exercises = getExercises(todayEntry);
+          tMerged.exerciseMinsByType = getExerciseMinsByType(todayEntry);
+          delete tMerged.exercise;
+          delete tMerged.exerciseMins;
+          setLog(tMerged);
+        }
         alert(`Imported ${imported.length} entries.`);
       } catch { alert("Could not read file. Please use a valid PsA Journal backup."); }
     };
@@ -2477,6 +2612,5 @@ function PsATracker() {
 
 ReactDOM.createRoot(document.getElementById('root')).render(<PsATracker />);
 </script>
-
 </body>
 </html>
