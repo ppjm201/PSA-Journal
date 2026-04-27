@@ -786,12 +786,12 @@ function generateDoctorReport(allLogs, { startDate, endDate, patientName }) {
   drawStat(1, "Flare Days",        `${flareDays}`,     `${flareRate}% of logged`);
   drawStat(2, "Avg Fatigue (/5)",  fmtNum(avgFatigue), null);
   drawStat(3, "Avg Skin (/5)",     fmtNum(avgSkin),    null);
-  y += 31;
+  y += 28;
 
   // Note explaining what "Flare Days" means - now in plain language
   doc.setFont("helvetica","italic").setFontSize(7).setTextColor(120,120,120);
   doc.text("Flare days = days where overall pain was rated 3 (Moderate) or higher.", MARGIN, y);
-  y += 5;
+  y += 7;
 
   // Morning soreness breakdown
   if (morningLogged > 0) {
@@ -821,16 +821,16 @@ function generateDoctorReport(allLogs, { startDate, endDate, patientName }) {
       doc.setFillColor(...colors[v-1]).rect(cx, y, 3, 3, "F");
       doc.text(`${labels[i]}: ${morningCounts[v]} day${morningCounts[v]===1?"":"s"}`, cx+5, y+2.5);
     });
-    y += 10;
+    y += 7;
   }
 
   // ─── Top affected joints ────────────────────────────────────────────────────
   newPageIfNeeded(60);
   doc.setDrawColor(236,229,220).line(MARGIN, y, PAGE_W-MARGIN, y);
-  y += 6;
+  y += 5;
   doc.setFont("helvetica","bold").setFontSize(13).setTextColor(30,61,47);
   doc.text("Most Affected Joints", MARGIN, y);
-  y += 7;
+  y += 6;
 
   if (topJoints.length === 0) {
     doc.setFont("helvetica","italic").setFontSize(10).setTextColor(150,150,150);
@@ -886,10 +886,10 @@ function generateDoctorReport(allLogs, { startDate, endDate, patientName }) {
   // ─── Notable patterns ───────────────────────────────────────────────────────
   newPageIfNeeded(40);
   doc.setDrawColor(236,229,220).line(MARGIN, y, PAGE_W-MARGIN, y);
-  y += 6;
+  y += 5;
   doc.setFont("helvetica","bold").setFontSize(13).setTextColor(30,61,47);
   doc.text("Notable Patterns", MARGIN, y);
-  y += 7;
+  y += 6;
 
   const patterns = [];
 
@@ -950,10 +950,9 @@ function generateDoctorReport(allLogs, { startDate, endDate, patientName }) {
     });
   }
 
-  // ─── PAGE 2: Visual section ─────────────────────────────────────────────────
-  doc.addPage();
-  y = MARGIN + 5;
-  addPageHeader();
+  // ─── Visual section: pain trend + calendar ──────────────────────────────────
+  newPageIfNeeded(80);
+  y += 4;
 
   // Pain trend line chart with trend overlay
   doc.setFont("helvetica","bold").setFontSize(13).setTextColor(30,61,47);
@@ -1059,10 +1058,10 @@ function generateDoctorReport(allLogs, { startDate, endDate, patientName }) {
   newPageIfNeeded(50);
   doc.setFont("helvetica","bold").setFontSize(13).setTextColor(30,61,47);
   doc.text("Daily Pain Calendar", MARGIN, y);
-  y += 7;
+  y += 5;
   doc.setFont("helvetica","normal").setFontSize(8).setTextColor(120,120,120);
   doc.text("Each cell shows pain level for that day. Empty cells = not logged.", MARGIN, y);
-  y += 6;
+  y += 5;
 
   // Build months covered
   const months = new Set();
@@ -1072,29 +1071,30 @@ function generateDoctorReport(allLogs, { startDate, endDate, patientName }) {
   const byDate = {};
   logs.forEach(l => { byDate[l.date] = l; });
 
-  // Layout: 2 mini-calendars per row, side by side
-  const calsPerRow = 2;
-  const calGap = 8;
+  // Layout: 3 mini-calendars per row to use horizontal space better
+  const calsPerRow = 3;
+  const calGap = 6;
   const calW = (CONTENT_W - calGap*(calsPerRow-1)) / calsPerRow;
   const cellSize = calW / 7;
-  const calH = cellSize * 7 + 8; // 6 weeks + header + label
+  // Real calendars need at most 6 rows (occasionally 5). Add 4mm header + 4mm padding.
+  const calH = cellSize * 6 + 8;
 
   monthList.forEach((ym, idx) => {
     const col = idx % calsPerRow;
     const rowStart = (idx % calsPerRow === 0);
-    if (rowStart) newPageIfNeeded(calH + 5);
+    if (rowStart) newPageIfNeeded(calH + 4);
     const cx = MARGIN + col * (calW + calGap);
     const cy = y;
 
     // Month label
     const [yy, mm] = ym.split("-").map(Number);
     const monthDate = new Date(yy, mm-1, 1);
-    doc.setFont("helvetica","bold").setFontSize(10).setTextColor(30,61,47);
-    doc.text(monthDate.toLocaleDateString("en-GB",{month:"long",year:"numeric"}), cx, cy);
+    doc.setFont("helvetica","bold").setFontSize(8).setTextColor(30,61,47);
+    doc.text(monthDate.toLocaleDateString("en-GB",{month:"short",year:"numeric"}), cx, cy);
 
     // Day headers
-    const headY = cy + 3;
-    doc.setFont("helvetica","normal").setFontSize(7).setTextColor(150,150,150);
+    const headY = cy + 2;
+    doc.setFont("helvetica","normal").setFontSize(5.5).setTextColor(150,150,150);
     ["M","T","W","T","F","S","S"].forEach((d,i) => {
       doc.text(d, cx + i*cellSize + cellSize/2, headY+3, { align:"center" });
     });
@@ -1102,7 +1102,7 @@ function generateDoctorReport(allLogs, { startDate, endDate, patientName }) {
     // Cells
     const firstWeekday = (monthDate.getDay()+6)%7;
     const daysInMonth = new Date(yy, mm, 0).getDate();
-    const gridY = headY + 5;
+    const gridY = headY + 4;
     for (let d=1; d<=daysInMonth; d++) {
       const dayIndex = firstWeekday + d - 1;
       const row = Math.floor(dayIndex/7), colIdx = dayIndex%7;
@@ -1113,17 +1113,17 @@ function generateDoctorReport(allLogs, { startDate, endDate, patientName }) {
       // Background
       if (entry) {
         const p = entry.overallPain || 0;
-        doc.setFillColor(...PAIN_RGB[p]).rect(cellX+0.3, cellY+0.3, cellSize-0.6, cellSize-0.6, "F");
-        doc.setFont("helvetica","bold").setFontSize(7).setTextColor(...PAIN_RGB_FG[p]);
+        doc.setFillColor(...PAIN_RGB[p]).rect(cellX+0.2, cellY+0.2, cellSize-0.4, cellSize-0.4, "F");
+        doc.setFont("helvetica","bold").setFontSize(5.5).setTextColor(...PAIN_RGB_FG[p]);
       } else {
-        doc.setFillColor(245,240,235).rect(cellX+0.3, cellY+0.3, cellSize-0.6, cellSize-0.6, "F");
-        doc.setFont("helvetica","normal").setFontSize(7).setTextColor(200,190,180);
+        doc.setFillColor(245,240,235).rect(cellX+0.2, cellY+0.2, cellSize-0.4, cellSize-0.4, "F");
+        doc.setFont("helvetica","normal").setFontSize(5.5).setTextColor(200,190,180);
       }
-      doc.text(`${d}`, cellX + cellSize/2, cellY + cellSize/2 + 1.5, { align:"center" });
+      doc.text(`${d}`, cellX + cellSize/2, cellY + cellSize/2 + 1, { align:"center" });
     }
 
     if (col === calsPerRow-1 || idx === monthList.length-1) {
-      y += calH + 5;
+      y += calH + 3;
     }
   });
 
@@ -1179,10 +1179,9 @@ function generateDoctorReport(allLogs, { startDate, endDate, patientName }) {
     });
   }
 
-  // ─── PAGE 3: Daily entries reference table ──────────────────────────────────
-  doc.addPage();
-  y = MARGIN + 5;
-  addPageHeader();
+  // ─── Daily entries reference table ──────────────────────────────────────────
+  newPageIfNeeded(50);
+  y += 4;
   doc.setFont("helvetica","bold").setFontSize(13).setTextColor(30,61,47);
   doc.text("Daily Entries", MARGIN, y);
   y += 7;
