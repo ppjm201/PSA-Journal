@@ -114,13 +114,13 @@ const pb = v => PAIN_BG[v]   ?? PAIN_BG[0];
 const pf = v => PAIN_FG[v]   ?? PAIN_FG[0];
 const pl = v => PAIN_LBLS[v] ?? "";
 
-const todayStr = () => new Date().toISOString().split("T")[0];
+const todayStr = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+};
 
-const CYCLE_OPTS = [
-  { id:"period", label:"Period",    color:"#C2185B" },
-  { id:"pms",    label:"PMS week",  color:"#AD1457" },
-  { id:"other",  label:"Other",     color:"#7a7069" },
-];
+// Cycle tracking: she only flags period start days. The insights engine derives
+// phase (menstruation / luteal / follicular) from the gap to the next period start.
 
 const emptyLog = () => ({
   date:todayStr(), overallPain:0, joints:{}, swelling:{},
@@ -129,7 +129,8 @@ const emptyLog = () => ({
   skinFlare:0,
   fatigue:0,
   morning:0,
-  cycle:"",
+  periodStart:false,    // true = her period began on this day
+  onPeriod:false,       // true = she is bleeding today (any day of period, not just start)
 });
 
 // ─── Storage: localStorage with in-memory fallback ────────────────────────────
@@ -174,9 +175,11 @@ function writePrefs(prefs) {
 //   - Alcohol raises pain ~0.7 points the next day (lag analysis)
 //   - Sleep <6h raises pain ~0.5 points next day  (sleep correlation)
 //   - Exercise lowers pain ~0.4 points same day   (exercise correlation)
+//   - Pilates appears as a regular exercise type
 //   - Skin and joint flares loosely co-occur      (skin-joint connection)
 //   - Two distinct flare clusters near start of period (Trend Direction shows improvement)
 //   - Right knee, left fingers, lower back are her chronic problem joints
+//   - 28-day menstrual cycle with PMS days raising pain ~0.7 points (cycle insight)
 
 function generateDemoData() {
   const days = 60;
@@ -189,11 +192,14 @@ function generateDemoData() {
   const clamp = (v, lo=0, hi=5) => Math.max(lo, Math.min(hi, v));
   const round = v => Math.round(v);
 
+  // Helper: format date as YYYY-MM-DD in local timezone (not UTC, avoids day shift)
+  const dateStrOf = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+
   // First, create base entries
   for (let i = days-1; i >= 0; i--) {
     const date = new Date(today);
     date.setDate(date.getDate() - i);
-    const dateStr = date.toISOString().split("T")[0];
+    const dateStr = dateStrOf(date);
     const dayIndex = days - 1 - i;  // 0 = oldest, 59 = today
 
     // Base pain level — flare clusters early in period for trend improvement
@@ -218,9 +224,10 @@ function generateDemoData() {
     const alcohol = isWeekend && rand() < 0.6 ? 1 + Math.floor(rand()*3) : (rand() < 0.15 ? 1 : 0);
 
     const exerciseRoll = rand();
-    const exercise = exerciseRoll < 0.5 ? "None"
-      : exerciseRoll < 0.7 ? "Walking"
-      : exerciseRoll < 0.85 ? "Yoga / Stretching"
+    const exercise = exerciseRoll < 0.5  ? "None"
+      : exerciseRoll < 0.65 ? "Walking"
+      : exerciseRoll < 0.78 ? "Yoga / Stretching"
+      : exerciseRoll < 0.88 ? "Pilates"
       : exerciseRoll < 0.95 ? "Swimming" : "Cycling";
     const exerciseMins = exercise === "None" ? 0 : 15 + Math.floor(rand()*4)*15;
 
@@ -257,6 +264,28 @@ function generateDemoData() {
     });
   }
 
+  // ─── Cycle simulation: 28-day cycle, 4-day period, PMS = 5 days before period start
+  // Pick a random cycle anchor (day index 0-27 inclusive) for the first period start
+  const cycleAnchor = Math.floor(rand() * 28);
+  // Build a Set of day indexes that are period start days, on-period days, and PMS days
+  const periodStartIndexes = new Set();
+  const onPeriodIndexes = new Set();
+  const pmsIndexes = new Set();
+  // Walk through cycle starts. Anchor + n*28 ± random jitter of ±1 day
+  for (let cycleNum = 0; ; cycleNum++) {
+    const startIdx = cycleAnchor + cycleNum * 28 + (cycleNum > 0 ? Math.floor(rand()*3) - 1 : 0);
+    if (startIdx >= days) break;
+    if (startIdx >= 0) periodStartIndexes.add(startIdx);
+    // Period lasts 4 days
+    for (let d = 0; d < 4; d++) {
+      if (startIdx + d >= 0 && startIdx + d < days) onPeriodIndexes.add(startIdx + d);
+    }
+    // PMS = 5 days before period start
+    for (let d = 1; d <= 5; d++) {
+      if (startIdx - d >= 0 && startIdx - d < days) pmsIndexes.add(startIdx - d);
+    }
+  }
+
   // Apply lag effects: pain depends on yesterday's alcohol/sleep and 2-days-ago dairy
   return entries.map((e, i) => {
     let pain = e.basePain;
@@ -270,6 +299,10 @@ function generateDemoData() {
       if (twoDaysAgo._ateDairy) pain += 0.9 + rand()*0.4;
     }
     if (e._exercise) pain -= 0.4 + rand()*0.2;
+    // Cycle effect: PMS days get a meaningful pain bump (the strongest cycle signal)
+    if (pmsIndexes.has(i)) pain += 0.6 + rand()*0.3;
+    // Menstruation gets a small bump too
+    if (onPeriodIndexes.has(i)) pain += 0.2 + rand()*0.2;
     pain += (rand()-0.5)*0.6;  // small noise
     const overallPain = clamp(round(pain));
 
@@ -342,6 +375,8 @@ function generateDemoData() {
       skinFlare,
       fatigue,
       morning,
+      onPeriod: onPeriodIndexes.has(i),
+      periodStart: periodStartIndexes.has(i),
     };
   });
 }
@@ -456,7 +491,7 @@ function PainTrendChart({ logs }) {
   const cutoff = new Date(today);
   if (Number.isFinite(days)) cutoff.setDate(cutoff.getDate() - days + 1);
   else cutoff.setFullYear(1970);
-  const cutoffStr = cutoff.toISOString().split("T")[0];
+  const cutoffStr = `${cutoff.getFullYear()}-${String(cutoff.getMonth()+1).padStart(2,"0")}-${String(cutoff.getDate()).padStart(2,"0")}`;
 
   const filtered = logs
     .filter(l => l.date >= cutoffStr)
@@ -959,22 +994,37 @@ function generateDoctorReport(allLogs, { startDate, endDate, patientName }) {
     }
   }
 
-  // Menstrual cycle effect
-  const periodPainDays = logs.filter(l => l.cycle === "period").map(l => l.overallPain || 0);
-  const pmsPainDays    = logs.filter(l => l.cycle === "pms").map(l => l.overallPain || 0);
-  const otherCycleDays = logs.filter(l => l.cycle === "other" || !l.cycle).map(l => l.overallPain || 0);
-  if (otherCycleDays.length >= 3) {
-    const baseline = avg(otherCycleDays);
-    if (pmsPainDays.length >= 3) {
-      const pmsAvg = avg(pmsPainDays);
-      if (Math.abs(pmsAvg - baseline) >= 0.3) {
-        patterns.push(`PMS week: pain averages ${Math.abs(pmsAvg-baseline).toFixed(1)} points ${pmsAvg>baseline?"higher":"lower"} during PMS week vs other days (${pmsPainDays.length} PMS days vs ${otherCycleDays.length} other days).`);
+  // Menstrual cycle effect — derive phases from periodStart markers
+  const sortedLogs = [...logs].sort((a,b) => a.date.localeCompare(b.date));
+  const periodStartDates = sortedLogs.filter(l => l.periodStart).map(l => l.date);
+  if (periodStartDates.length > 0) {
+    const daysBetweenDates = (a, b) => {
+      const da = new Date(a + "T12:00:00"), db = new Date(b + "T12:00:00");
+      return Math.round((db - da) / 86400000);
+    };
+    const menstruationPain = [], pmsPain = [], midCyclePain = [];
+    sortedLogs.forEach(l => {
+      const pain = l.overallPain || 0;
+      if (l.onPeriod) { menstruationPain.push(pain); return; }
+      const next = periodStartDates.find(d => d > l.date);
+      if (!next) return;  // can't classify without an upcoming period start
+      const gap = daysBetweenDates(l.date, next);
+      if (gap >= 1 && gap <= 5) pmsPain.push(pain);
+      else midCyclePain.push(pain);
+    });
+    if (midCyclePain.length >= 3) {
+      const baseline = avg(midCyclePain);
+      if (pmsPain.length >= 3) {
+        const pmsAvg = avg(pmsPain);
+        if (Math.abs(pmsAvg - baseline) >= 0.3) {
+          patterns.push(`PMS phase (5 days before period): pain averages ${Math.abs(pmsAvg-baseline).toFixed(1)} points ${pmsAvg>baseline?"higher":"lower"} vs mid-cycle days (${pmsPain.length} PMS days vs ${midCyclePain.length} mid-cycle days).`);
+        }
       }
-    }
-    if (periodPainDays.length >= 3) {
-      const periodAvg = avg(periodPainDays);
-      if (Math.abs(periodAvg - baseline) >= 0.3) {
-        patterns.push(`Menstrual period: pain averages ${Math.abs(periodAvg-baseline).toFixed(1)} points ${periodAvg>baseline?"higher":"lower"} during the period vs other days (${periodPainDays.length} period days vs ${otherCycleDays.length} other days).`);
+      if (menstruationPain.length >= 3) {
+        const menstAvg = avg(menstruationPain);
+        if (Math.abs(menstAvg - baseline) >= 0.3) {
+          patterns.push(`Menstruation: pain averages ${Math.abs(menstAvg-baseline).toFixed(1)} points ${menstAvg>baseline?"higher":"lower"} during the period vs mid-cycle days (${menstruationPain.length} period days vs ${midCyclePain.length} mid-cycle days).`);
+        }
       }
     }
   }
@@ -1308,8 +1358,9 @@ function CalendarHeatmap({ logs, onEditEntry, onAddMissedDay }) {
   // Mon-first column: getDay() returns 0=Sun..6=Sat. Convert: Mon=0, Sun=6
   const firstCol = (firstDay.getDay() + 6) % 7;
 
-  const fmtDate = (d) => d.toISOString().split("T")[0];
-  const todayKey = fmtDate(today);
+  // Build date keys via string concatenation (NOT toISOString, which shifts via UTC)
+  const ymPrefix = `${year}-${String(month+1).padStart(2,"0")}-`;
+  const todayKey = todayStr();
 
   const goPrev = () => setViewDate(new Date(year, month-1, 1));
   const goNext = () => setViewDate(new Date(year, month+1, 1));
@@ -1319,10 +1370,9 @@ function CalendarHeatmap({ logs, onEditEntry, onAddMissedDay }) {
   const cells = [];
   for (let i=0; i<firstCol; i++) cells.push(null);
   for (let d=1; d<=daysInMonth; d++) {
-    const date = new Date(year, month, d);
-    const key  = fmtDate(date);
+    const key = ymPrefix + String(d).padStart(2,"0");
     const entry = byDate[key];
-    const isFuture = date > today;
+    const isFuture = key > todayKey;
     const isToday  = key === todayKey;
     const value = entry ? (entry[metric]||0) : null;
     cells.push({ d, key, entry, isFuture, isToday, value });
@@ -1655,17 +1705,43 @@ function LogTab({ log, setLog, onSave, saveMsg, onResetToToday, logs, prefs }) {
 
       {prefs?.trackCycle && (
         <Card title="Cycle" emoji="🩸">
-          <p style={{ fontSize:13, color:"#9a9189", margin:"0 0 10px" }}>
-            Hormonal phase can affect inflammation. Skip if not applicable.
+          <p style={{ fontSize:13, color:"#9a9189", margin:"0 0 12px", lineHeight:1.5 }}>
+            Just two taps when relevant — the app figures out cycle phases for you.
           </p>
-          <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
-            {CYCLE_OPTS.map(c => (
-              <Chip key={c.id} label={c.label}
-                active={log.cycle === c.id}
-                onClick={() => setLog(p => ({ ...p, cycle: p.cycle === c.id ? "" : c.id }))}
-                color={c.color}/>
-            ))}
-          </div>
+          <label style={{ display:"flex", alignItems:"center", gap:12, cursor:"pointer",
+            padding:"10px 12px", borderRadius:10, marginBottom:8,
+            border:`1.5px solid ${log.onPeriod ? "#C2185B" : "#E2D9CE"}`,
+            background: log.onPeriod ? "#FCE4EC" : "#fff" }}>
+            <input type="checkbox" checked={!!log.onPeriod}
+              onChange={e => {
+                const checked = e.target.checked;
+                setLog(p => ({ ...p,
+                  onPeriod: checked,
+                  // If unchecking on-period, also clear periodStart (it can't be a start day if she's not bleeding)
+                  periodStart: checked ? p.periodStart : false,
+                }));
+              }}
+              style={{ width:18, height:18, accentColor:"#C2185B", cursor:"pointer" }}/>
+            <div style={{ flex:1 }}>
+              <div style={{ fontSize:13, color:"#1e3d2f", fontWeight:500 }}>On my period today</div>
+            </div>
+          </label>
+          {log.onPeriod && (
+            <label style={{ display:"flex", alignItems:"center", gap:12, cursor:"pointer",
+              padding:"10px 12px", borderRadius:10,
+              border:`1.5px solid ${log.periodStart ? "#AD1457" : "#E2D9CE"}`,
+              background: log.periodStart ? "#F8BBD0" : "#fff" }}>
+              <input type="checkbox" checked={!!log.periodStart}
+                onChange={e => setLog(p => ({ ...p, periodStart: e.target.checked }))}
+                style={{ width:18, height:18, accentColor:"#AD1457", cursor:"pointer" }}/>
+              <div style={{ flex:1 }}>
+                <div style={{ fontSize:13, color:"#1e3d2f", fontWeight:500 }}>Today is day 1 of my period</div>
+                <div style={{ fontSize:11, color:"#9a9189", marginTop:2 }}>
+                  Helps the app calculate your cycle phases
+                </div>
+              </div>
+            </label>
+          )}
         </Card>
       )}
 
@@ -1795,7 +1871,7 @@ function HistoryTab({ logs, onExport, onImport, onEditEntry, onDeleteEntry, onAd
                 {entry.morning>0 && <span style={{ fontSize:11, background:MORNING_BG[entry.morning], color:MORNING_FG[entry.morning], borderRadius:20, padding:"2px 9px" }}>🌅 {MORNING_LBLS[entry.morning]} morning</span>}
                 {entry.fatigue>0 && <span style={{ fontSize:11, background:pb(entry.fatigue), color:pf(entry.fatigue), borderRadius:20, padding:"2px 9px" }}>🪫 Fatigue {entry.fatigue}/5</span>}
                 {entry.skinFlare>0 && <span style={{ fontSize:11, background:pb(entry.skinFlare), color:pf(entry.skinFlare), borderRadius:20, padding:"2px 9px" }}>✨ Skin {entry.skinFlare}/5</span>}
-                {entry.cycle && (() => { const c = CYCLE_OPTS.find(o=>o.id===entry.cycle); return c ? <span style={{ fontSize:11, background:"#FCE4EC", color:c.color, borderRadius:20, padding:"2px 9px" }}>🩸 {c.label}</span> : null; })()}
+                {entry.onPeriod && <span style={{ fontSize:11, background:"#FCE4EC", color:"#C2185B", borderRadius:20, padding:"2px 9px" }}>🩸 Period{entry.periodStart ? " day 1" : ""}</span>}
                 {affected.slice(0,5).map(([jid,pain])=>{
                   const j=JOINTS.find(x=>x.id===jid);
                   return <span key={jid} style={{ fontSize:11, background:pb(pain), color:pf(pain),
@@ -1902,13 +1978,16 @@ function InsightsTab({ logs, onEditEntry, onAddMissedDay, prefs }) {
   const [patientName, setPatientName] = useState("");
   const [generating, setGenerating] = useState(false);
 
+  // Local-timezone date formatter (avoids UTC day shift)
+  const fmtLocalDate = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+
   // Initialise report defaults to last 3 months when dialog opens
   const openReport = () => {
     const today = new Date(todayStr()+"T12:00:00");
     const threeMonthsAgo = new Date(today);
     threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
-    setReportEnd(today.toISOString().split("T")[0]);
-    setReportStart(threeMonthsAgo.toISOString().split("T")[0]);
+    setReportEnd(fmtLocalDate(today));
+    setReportStart(fmtLocalDate(threeMonthsAgo));
     setReportOpen(true);
   };
 
@@ -1916,8 +1995,8 @@ function InsightsTab({ logs, onEditEntry, onAddMissedDay, prefs }) {
     const today = new Date(todayStr()+"T12:00:00");
     const start = new Date(today);
     start.setMonth(start.getMonth() - months);
-    setReportEnd(today.toISOString().split("T")[0]);
-    setReportStart(start.toISOString().split("T")[0]);
+    setReportEnd(fmtLocalDate(today));
+    setReportStart(fmtLocalDate(start));
   };
 
   const handleGenerate = () => {
@@ -1979,7 +2058,7 @@ function InsightsTab({ logs, onEditEntry, onAddMissedDay, prefs }) {
   const addDays = (dateStr, days) => {
     const d = new Date(dateStr + "T12:00:00");
     d.setDate(d.getDate() + days);
-    return d.toISOString().split("T")[0];
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
   };
 
   const lagLabel = lag => lag === 0 ? "same day" : lag === 1 ? "next day" : `${lag} days later`;
@@ -2018,16 +2097,48 @@ function InsightsTab({ logs, onEditEntry, onAddMissedDay, prefs }) {
   const painOnSkin      = avge(skinFlareDays.map(l=>l.overallPain));
   const painOffSkin     = avge(noSkinFlareDays.map(l=>l.overallPain));
 
-  // Cycle phase insight: compare pain between phases vs neutral days
+  // Cycle phase insight: derive phase from period start markers.
+  // - "Menstruation": entries marked onPeriod
+  // - "PMS (last 5 days before next period)": derived from gap to next periodStart
+  // - "Mid-cycle": everything else
   const cycleStats = (() => {
-    const periodDays = logs.filter(l => l.cycle === "period");
-    const pmsDays    = logs.filter(l => l.cycle === "pms");
-    const otherDays  = logs.filter(l => l.cycle === "other" || !l.cycle);
-    if (periodDays.length < 3 && pmsDays.length < 3) return null;
+    // Sort logs by date and find period start dates
+    const sorted = [...logs].sort((a,b) => a.date.localeCompare(b.date));
+    const periodStarts = sorted.filter(l => l.periodStart).map(l => l.date);
+    if (periodStarts.length === 0) return null;
+
+    // Helper to count days between two yyyy-mm-dd strings
+    const daysBetween = (a, b) => {
+      const da = new Date(a + "T12:00:00"), db = new Date(b + "T12:00:00");
+      return Math.round((db - da) / 86400000);
+    };
+
+    const phaseOf = (l) => {
+      if (l.onPeriod) return "menstruation";
+      // Find the next period start after this date
+      const next = periodStarts.find(d => d > l.date);
+      if (!next) return null;  // unknown: no future period start to anchor PMS
+      const gap = daysBetween(l.date, next);
+      if (gap >= 1 && gap <= 5) return "pms";
+      return "midcycle";
+    };
+
+    const buckets = { menstruation: [], pms: [], midcycle: [] };
+    sorted.forEach(l => {
+      const ph = phaseOf(l);
+      if (ph) buckets[ph].push(l.overallPain || 0);
+    });
+
+    if (buckets.menstruation.length < 3 && buckets.pms.length < 3) return null;
+
     return {
-      period: periodDays.length >= 3 ? { avg: avge(periodDays.map(l=>l.overallPain)), n: periodDays.length } : null,
-      pms:    pmsDays.length    >= 3 ? { avg: avge(pmsDays.map(l=>l.overallPain)),    n: pmsDays.length    } : null,
-      other:  otherDays.length  >= 3 ? { avg: avge(otherDays.map(l=>l.overallPain)),  n: otherDays.length  } : null,
+      menstruation: buckets.menstruation.length >= 3
+        ? { avg: avge(buckets.menstruation), n: buckets.menstruation.length } : null,
+      pms: buckets.pms.length >= 3
+        ? { avg: avge(buckets.pms), n: buckets.pms.length } : null,
+      midcycle: buckets.midcycle.length >= 3
+        ? { avg: avge(buckets.midcycle), n: buckets.midcycle.length } : null,
+      cyclesTracked: periodStarts.length,
     };
   })();
 
@@ -2409,34 +2520,35 @@ function InsightsTab({ logs, onEditEntry, onAddMissedDay, prefs }) {
         </Card>
       )}
 
-      {prefs?.trackCycle && cycleStats && (cycleStats.period || cycleStats.pms) && cycleStats.other && (
+      {prefs?.trackCycle && cycleStats && (cycleStats.menstruation || cycleStats.pms) && cycleStats.midcycle && (
         <Card title="Cycle & Pain" emoji="🩸">
           <p style={{ fontSize:12, color:"#9a9189", margin:"0 0 12px", lineHeight:1.6 }}>
-            Average pain across cycle phases. Hormonal changes are known to influence inflammation in autoimmune conditions.
+            Average pain across cycle phases. Hormonal changes are known to influence inflammation.
+            Phases derived from your "day 1" markers ({cycleStats.cyclesTracked} cycle{cycleStats.cyclesTracked===1?"":"s"} tracked so far).
           </p>
           <div style={{ display:"flex", gap:10, marginBottom: 12 }}>
             {cycleStats.pms && (
-              <SB label="PMS week" value={fmt(cycleStats.pms.avg)} sub={`${cycleStats.pms.n} days`}
-                color={cycleStats.pms.avg > cycleStats.other.avg ? "#C2185B" : "#2C5F4A"}
-                bg={cycleStats.pms.avg > cycleStats.other.avg ? "#FCE4EC" : "#E8F5E9"}/>
+              <SB label="PMS (last 5d)" value={fmt(cycleStats.pms.avg)} sub={`${cycleStats.pms.n} days`}
+                color={cycleStats.pms.avg > cycleStats.midcycle.avg ? "#C2185B" : "#2C5F4A"}
+                bg={cycleStats.pms.avg > cycleStats.midcycle.avg ? "#FCE4EC" : "#E8F5E9"}/>
             )}
-            {cycleStats.period && (
-              <SB label="Period" value={fmt(cycleStats.period.avg)} sub={`${cycleStats.period.n} days`}
-                color={cycleStats.period.avg > cycleStats.other.avg ? "#C2185B" : "#2C5F4A"}
-                bg={cycleStats.period.avg > cycleStats.other.avg ? "#FCE4EC" : "#E8F5E9"}/>
+            {cycleStats.menstruation && (
+              <SB label="Menstruation" value={fmt(cycleStats.menstruation.avg)} sub={`${cycleStats.menstruation.n} days`}
+                color={cycleStats.menstruation.avg > cycleStats.midcycle.avg ? "#C2185B" : "#2C5F4A"}
+                bg={cycleStats.menstruation.avg > cycleStats.midcycle.avg ? "#FCE4EC" : "#E8F5E9"}/>
             )}
-            <SB label="Other days" value={fmt(cycleStats.other.avg)} sub={`${cycleStats.other.n} days`}
+            <SB label="Mid-cycle" value={fmt(cycleStats.midcycle.avg)} sub={`${cycleStats.midcycle.n} days`}
               color="#2C5F4A" bg="#E8F5E9"/>
           </div>
           {(() => {
             const lines = [];
-            if (cycleStats.pms && Math.abs(cycleStats.pms.avg - cycleStats.other.avg) >= 0.3) {
-              const diff = (cycleStats.pms.avg - cycleStats.other.avg).toFixed(1);
-              lines.push(`PMS week: pain ${diff > 0 ? "+" : ""}${diff} points vs other days.`);
+            if (cycleStats.pms && Math.abs(cycleStats.pms.avg - cycleStats.midcycle.avg) >= 0.3) {
+              const diff = (cycleStats.pms.avg - cycleStats.midcycle.avg).toFixed(1);
+              lines.push(`PMS days: pain ${diff > 0 ? "+" : ""}${diff} points vs mid-cycle.`);
             }
-            if (cycleStats.period && Math.abs(cycleStats.period.avg - cycleStats.other.avg) >= 0.3) {
-              const diff = (cycleStats.period.avg - cycleStats.other.avg).toFixed(1);
-              lines.push(`Period: pain ${diff > 0 ? "+" : ""}${diff} points vs other days.`);
+            if (cycleStats.menstruation && Math.abs(cycleStats.menstruation.avg - cycleStats.midcycle.avg) >= 0.3) {
+              const diff = (cycleStats.menstruation.avg - cycleStats.midcycle.avg).toFixed(1);
+              lines.push(`Period days: pain ${diff > 0 ? "+" : ""}${diff} points vs mid-cycle.`);
             }
             return lines.length > 0 ? (
               <div style={{ padding:"10px 12px", borderRadius:9, background:"#FCE4EC",
@@ -2446,7 +2558,7 @@ function InsightsTab({ logs, onEditEntry, onAddMissedDay, prefs }) {
             ) : null;
           })()}
           <div style={{ fontSize:12, color:"#9a9189", fontStyle:"italic", marginTop:10 }}>
-            More cycles tracked = more reliable pattern. Aim for at least 2-3 full cycles before drawing conclusions.
+            Tracking gets more reliable with each cycle. Aim for at least 2-3 full cycles before drawing conclusions.
           </div>
         </Card>
       )}
