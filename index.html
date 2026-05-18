@@ -741,11 +741,19 @@ function generateDoctorReport(allLogs, { startDate, endDate, patientName }) {
     });
   });
   const topJoints = JOINTS
-    .map(j => ({ ...j, avg: avg((jointTotals[j.id]||[]).filter(v=>v>0)),
-                 days:(jointTotals[j.id]||[]).filter(v=>v>0).length,
-                 swelling: swellingCounts[j.id]||0 }))
-    .filter(j => j.avg !== null && j.avg > 0)
-    .sort((a,b) => b.avg - a.avg)
+    .map(j => {
+      const painScores = (jointTotals[j.id]||[]).filter(v=>v>0);
+      if (painScores.length === 0) return null;
+      const days = painScores.length;
+      const totalPain = painScores.reduce((s,x)=>s+x, 0);
+      // Burden = total pain across the period / total logged days.
+      // Treats unaffected logged days as 0 — gives fair weight to chronic joints.
+      const burden = +(totalPain / logs.length).toFixed(2);
+      const avgWhenPainful = +(totalPain / days).toFixed(1);
+      return { ...j, burden, days, avgWhenPainful, swelling: swellingCounts[j.id]||0 };
+    })
+    .filter(j => j && j.days >= 2)   // require at least 2 days to appear
+    .sort((a,b) => b.burden - a.burden)
     .slice(0, 8);
 
   // Trend within the report period itself
@@ -892,53 +900,66 @@ function generateDoctorReport(allLogs, { startDate, endDate, patientName }) {
 
   if (topJoints.length === 0) {
     doc.setFont("helvetica","italic").setFontSize(10).setTextColor(150,150,150);
-    doc.text("No painful joints recorded in this period.", MARGIN, y);
+    doc.text("No joints with sustained pain in this period.", MARGIN, y);
     y += 7;
   } else {
     // Column layout (in mm from MARGIN; CONTENT_W ~ 180mm)
     const COL_JOINT     = 0;
-    const COL_BAR_X     = 60;
+    const COL_BAR_X     = 55;
     const COL_BAR_W     = 32;
-    const COL_PAIN_NUM  = 96;     // pain number after the bar
-    const COL_DAYS      = 130;
-    const COL_SWOLLEN   = 155;
+    const COL_BURDEN    = 91;
+    const COL_DAYS      = 118;
+    const COL_AVG       = 145;
+    const COL_SWOLLEN   = 168;
 
     // Table headers
     doc.setFont("helvetica","bold").setFontSize(8).setTextColor(120,120,120);
-    doc.text("JOINT",     MARGIN + COL_JOINT,    y);
-    doc.text("AVG PAIN",  MARGIN + COL_BAR_X,    y);
-    doc.text("DAYS",      MARGIN + COL_DAYS,     y);
-    doc.text("SWOLLEN",   MARGIN + COL_SWOLLEN,  y);
+    doc.text("JOINT",       MARGIN + COL_JOINT,    y);
+    doc.text("PAIN BURDEN", MARGIN + COL_BAR_X,    y);
+    doc.text("DAYS",        MARGIN + COL_DAYS,     y);
+    doc.text("AVG",         MARGIN + COL_AVG,      y);
+    doc.text("SWOLLEN",     MARGIN + COL_SWOLLEN,  y);
     y += 4;
     doc.setDrawColor(236,229,220).line(MARGIN, y, PAGE_W-MARGIN, y);
     y += 5;
+
+    // Max burden across topJoints for scaling the bar
+    const maxBurden = Math.max(...topJoints.map(j => j.burden), 0.01);
 
     topJoints.forEach(j => {
       newPageIfNeeded(8);
       doc.setFont("helvetica","normal").setFontSize(10).setTextColor(30,61,47);
       doc.text(j.label, MARGIN + COL_JOINT, y);
 
-      // Pain bar
+      // Burden bar (relative to highest burden in this view)
       const barX = MARGIN + COL_BAR_X, barY = y-3, barH = 4;
       doc.setFillColor(240,232,224).rect(barX, barY, COL_BAR_W, barH, "F");
-      const fillW = (j.avg/5) * COL_BAR_W;
-      const colorIdx = Math.min(5, Math.round(j.avg));
+      const fillW = (j.burden / maxBurden) * COL_BAR_W;
+      const colorIdx = Math.min(5, Math.round(j.avgWhenPainful));
       doc.setFillColor(...PAIN_RGB_FG[colorIdx]).rect(barX, barY, fillW, barH, "F");
 
-      // Pain numeric value (positioned at COL_PAIN_NUM, well clear of DAYS at 130)
+      // Burden numeric
       doc.setFont("helvetica","bold").setFontSize(10).setTextColor(...PAIN_RGB_FG[colorIdx]);
-      doc.text(j.avg.toFixed(1), MARGIN + COL_PAIN_NUM, y);
+      doc.text(j.burden.toFixed(2), MARGIN + COL_BURDEN, y);
 
-      // Days
-      doc.setFont("helvetica","normal").setTextColor(80,80,80);
-      doc.text(`${j.days}`, MARGIN + COL_DAYS, y);
+      // Days (out of total logged)
+      doc.setFont("helvetica","normal").setFontSize(9).setTextColor(80,80,80);
+      doc.text(`${j.days}/${logs.length}`, MARGIN + COL_DAYS, y);
 
-      // Swollen (use ASCII "-" instead of em-dash to avoid font encoding issues)
+      // Avg when painful
+      doc.text(j.avgWhenPainful.toFixed(1), MARGIN + COL_AVG, y);
+
+      // Swollen
       doc.setTextColor(j.swelling>0?59:120, j.swelling>0?130:120, j.swelling>0?246:120);
       doc.text(j.swelling>0 ? `${j.swelling}d` : "-", MARGIN + COL_SWOLLEN, y);
       y += 6;
     });
-    y += 3;
+
+    // Footnote explaining burden
+    y += 2;
+    doc.setFont("helvetica","italic").setFontSize(7).setTextColor(120,120,120);
+    doc.text("Pain burden = total pain divided by total logged days. Combines severity and frequency. Sorted by burden (most impactful first).", MARGIN, y);
+    y += 5;
   }
 
   // ─── Notable patterns ───────────────────────────────────────────────────────
@@ -2225,9 +2246,21 @@ function InsightsTab({ logs, onEditEntry, onAddMissedDay, prefs }) {
     jointTotals[id].push(pain);
   }));
   const topJoints = JOINTS
-    .map(j=>({...j, avg:avge(jointTotals[j.id]||[])}))
-    .filter(j=>j.avg!==null&&j.avg>0)
-    .sort((a,b)=>b.avg-a.avg).slice(0,6);
+    .map(j => {
+      const painScores = (jointTotals[j.id] || []).filter(v => v > 0);
+      if (painScores.length === 0) return null;
+      const days = painScores.length;
+      const totalPain = painScores.reduce((s,x)=>s+x, 0);
+      // Burden = total pain divided by total logged days (unaffected days count as 0).
+      // This weights both severity and frequency, so a one-off doesn't dominate.
+      const burden = totalPain / logs.length;
+      const avgWhenPainful = totalPain / days;
+      const freqPct = Math.round((days / logs.length) * 100);
+      return { ...j, burden, days, avgWhenPainful, freqPct };
+    })
+    .filter(j => j && j.days >= 2)        // hide one-off pain days from the ranking
+    .sort((a,b) => b.burden - a.burden)
+    .slice(0, 6);
 
   const SB = ({label, value, sub, color="#2C5F4A", bg="#E8F5E9", delta, deltaInverted}) => {
     // delta: numeric change vs prior period. positive = went up, negative = went down.
@@ -2565,16 +2598,30 @@ function InsightsTab({ logs, onEditEntry, onAddMissedDay, prefs }) {
 
       {topJoints.length>0 && (
         <Card title="Most Affected Joints" emoji="🦴">
-          {topJoints.map(j=>(
-            <div key={j.id} style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
-              <span style={{ fontSize:12, flex:1, color:"#1e3d2f", fontWeight:500 }}>{j.label}</span>
-              <div style={{ flex:2, height:8, background:"#F0E8E0", borderRadius:4, overflow:"hidden" }}>
-                <div style={{ width:`${(j.avg/5)*100}%`, height:"100%",
-                  background:"linear-gradient(to right,#81C784,#EF5350)", borderRadius:4 }}/>
+          <p style={{ fontSize:12, color:"#9a9189", margin:"0 0 12px", lineHeight:1.5 }}>
+            Ranked by <strong>pain burden</strong> — how much each joint affected daily life across the period, combining severity and frequency.
+          </p>
+          {(() => {
+            const maxBurden = Math.max(...topJoints.map(j => j.burden), 0.01);
+            return topJoints.map(j => (
+              <div key={j.id} style={{ display:"flex", alignItems:"center", gap:10, marginBottom:14 }}>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontSize:13, color:"#1e3d2f", fontWeight:500 }}>{j.label}</div>
+                  <div style={{ fontSize:11, color:"#9a9189", marginTop:2 }}>
+                    Painful {j.days} of {logs.length} days ({j.freqPct}%) · avg {j.avgWhenPainful.toFixed(1)} when affected
+                  </div>
+                </div>
+                <div style={{ flex:1.2, display:"flex", alignItems:"center", gap:8 }}>
+                  <div style={{ flex:1, height:8, background:"#F0E8E0", borderRadius:4, overflow:"hidden" }}>
+                    <div style={{ width:`${(j.burden/maxBurden)*100}%`, height:"100%",
+                      background:"linear-gradient(to right,#81C784,#EF5350)", borderRadius:4 }}/>
+                  </div>
+                  <span style={{ fontSize:13, fontWeight:800, color:pf(Math.round(j.avgWhenPainful)),
+                    width:36, textAlign:"right" }}>{j.burden.toFixed(2)}</span>
+                </div>
               </div>
-              <span style={{ fontSize:13, fontWeight:800, color:pf(Math.round(j.avg)), width:26, textAlign:"right" }}>{j.avg.toFixed(1)}</span>
-            </div>
-          ))}
+            ));
+          })()}
         </Card>
       )}
 
